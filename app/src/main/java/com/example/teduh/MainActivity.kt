@@ -1,6 +1,10 @@
 
 package com.example.teduh
 
+import android.content.ContentValues
+import android.content.Context
+import android.database.sqlite.SQLiteDatabase
+import android.database.sqlite.SQLiteOpenHelper
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -11,23 +15,23 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.teduh.database.DatabaseHelper
 import com.example.teduh.model.Mood
-import com.example.teduh.utils.RecommendationHelper
 import java.time.LocalDate
 import java.time.temporal.ChronoUnit
 
 private val TeduhGreen = Color(0xFF477A68)
 private val TeduhBackground = Color(0xFFF4F7F5)
+private val TeduhDark = Color(0xFF263A33)
 
 class MainActivity : ComponentActivity() {
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -41,9 +45,256 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+// =====================
+// DATABASE
+// =====================
+
+data class Mood(
+    val id: Int = 0,
+    val date: String,
+    val score: Int,
+    val emotion: String,
+    val trigger: String,
+    val journal: String
+)
+
+class DatabaseHelper(context: Context) :
+    SQLiteOpenHelper(context, "teduh.db", null, 1) {
+
+    override fun onCreate(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE moods (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT,
+                score INTEGER,
+                emotion TEXT,
+                trigger_name TEXT,
+                journal TEXT
+            )
+            """.trimIndent()
+        )
+
+        db.execSQL(
+            """
+            CREATE TABLE dass_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT,
+                depression INTEGER,
+                anxiety INTEGER,
+                stress INTEGER
+            )
+            """.trimIndent()
+        )
+    }
+
+    override fun onUpgrade(
+        db: SQLiteDatabase,
+        oldVersion: Int,
+        newVersion: Int
+    ) {
+        // Tidak menghapus data yang sudah tersimpan.
+    }
+
+    fun insertMood(mood: Mood): Boolean {
+        val values = ContentValues().apply {
+            put("date", mood.date)
+            put("score", mood.score)
+            put("emotion", mood.emotion)
+            put("trigger_name", mood.trigger)
+            put("journal", mood.journal)
+        }
+
+        return writableDatabase.insert("moods", null, values) != -1L
+    }
+
+    fun getAllMoods(): List<Mood> {
+        val result = mutableListOf<Mood>()
+
+        val cursor = readableDatabase.rawQuery(
+            "SELECT * FROM moods ORDER BY date DESC, id DESC",
+            null
+        )
+
+        cursor.use {
+            while (it.moveToNext()) {
+                result.add(
+                    Mood(
+                        id = it.getInt(it.getColumnIndexOrThrow("id")),
+                        date = it.getString(it.getColumnIndexOrThrow("date")),
+                        score = it.getInt(it.getColumnIndexOrThrow("score")),
+                        emotion = it.getString(it.getColumnIndexOrThrow("emotion")),
+                        trigger = it.getString(it.getColumnIndexOrThrow("trigger_name")),
+                        journal = it.getString(it.getColumnIndexOrThrow("journal"))
+                    )
+                )
+            }
+        }
+
+        return result
+    }
+
+    fun insertDassResult(
+        date: String,
+        depression: Int,
+        anxiety: Int,
+        stress: Int
+    ): Boolean {
+        val values = ContentValues().apply {
+            put("date", date)
+            put("depression", depression)
+            put("anxiety", anxiety)
+            put("stress", stress)
+        }
+
+        return writableDatabase.insert(
+            "dass_results",
+            null,
+            values
+        ) != -1L
+    }
+
+    fun getLatestDassResult(): Map<String, Int>? {
+        val cursor = readableDatabase.rawQuery(
+            "SELECT * FROM dass_results ORDER BY id DESC LIMIT 1",
+            null
+        )
+
+        cursor.use {
+            if (it.moveToFirst()) {
+                return mapOf(
+                    "depression" to it.getInt(
+                        it.getColumnIndexOrThrow("depression")
+                    ),
+                    "anxiety" to it.getInt(
+                        it.getColumnIndexOrThrow("anxiety")
+                    ),
+                    "stress" to it.getInt(
+                        it.getColumnIndexOrThrow("stress")
+                    )
+                )
+            }
+        }
+
+        return null
+    }
+}
+
+// =====================
+// RECOMMENDATION
+// =====================
+
+data class ActivityRecommendation(
+    val name: String,
+    val description: String,
+    val emotions: List<String>,
+    val triggers: List<String>,
+    val duration: String
+)
+
+object RecommendationHelper {
+
+    private val activities = listOf(
+        ActivityRecommendation(
+            "Latihan Pernapasan",
+            "Atur napas secara perlahan untuk membantu tubuh lebih rileks.",
+            listOf("Cemas", "Stres", "Marah"),
+            listOf("Pekerjaan", "Akademik", "Hubungan"),
+            "5 menit"
+        ),
+        ActivityRecommendation(
+            "Mendengarkan Musik",
+            "Dengarkan musik yang menenangkan dan nikmati suasananya.",
+            listOf("Sedih", "Stres", "Lelah"),
+            listOf("Pekerjaan", "Akademik", "Lingkungan"),
+            "10 menit"
+        ),
+        ActivityRecommendation(
+            "Menulis Jurnal",
+            "Tuliskan perasaan dan hal-hal yang sedang kamu pikirkan.",
+            listOf("Sedih", "Cemas", "Marah"),
+            listOf("Hubungan", "Keluarga", "Akademik"),
+            "10 menit"
+        ),
+        ActivityRecommendation(
+            "Berjalan Santai",
+            "Lakukan jalan santai untuk menyegarkan pikiran.",
+            listOf("Stres", "Lelah", "Bosan"),
+            listOf("Pekerjaan", "Akademik", "Lingkungan"),
+            "15 menit"
+        ),
+        ActivityRecommendation(
+            "Meditasi",
+            "Luangkan waktu untuk menenangkan pikiran dan fokus pada diri sendiri.",
+            listOf("Cemas", "Stres", "Marah"),
+            listOf("Pekerjaan", "Hubungan", "Akademik"),
+            "10 menit"
+        ),
+        ActivityRecommendation(
+            "Berbicara dengan Teman",
+            "Ceritakan perasaanmu kepada orang yang kamu percaya.",
+            listOf("Sedih", "Cemas", "Kesepian"),
+            listOf("Hubungan", "Keluarga", "Lingkungan"),
+            "15 menit"
+        ),
+        ActivityRecommendation(
+            "Istirahat Sejenak",
+            "Berikan waktu bagi tubuh dan pikiran untuk beristirahat.",
+            listOf("Lelah", "Stres", "Bosan"),
+            listOf("Pekerjaan", "Akademik", "Lingkungan"),
+            "5 menit"
+        )
+    )
+
+    fun getRecommendations(
+        emotion: String,
+        trigger: String,
+        stressLevel: String
+    ): List<ActivityRecommendation> {
+
+        return activities.map { activity ->
+
+            val emotionMatch =
+                if (activity.emotions.any {
+                        it.equals(emotion, ignoreCase = true)
+                    }) 1 else 0
+
+            val triggerMatch =
+                if (activity.triggers.any {
+                        it.equals(trigger, ignoreCase = true)
+                    }) 1 else 0
+
+            val durationMatch =
+                if (stressLevel == "Normal" || stressLevel == "Mild") {
+                    if (activity.duration == "15 menit") 1 else 0
+                } else {
+                    if (activity.duration == "5 menit" ||
+                        activity.duration == "10 menit"
+                    ) 1 else 0
+                }
+
+            val score =
+                (emotionMatch * 3) +
+                        (triggerMatch * 2) +
+                        (durationMatch * 1)
+
+            Pair(activity, score)
+
+        }.sortedByDescending { it.second }
+            .take(3)
+            .map { it.first }
+    }
+}
+
+// =====================
+// MAIN APP
+// =====================
+
 @Composable
 fun TeduhApp(database: DatabaseHelper) {
 
+    var isLoggedIn by remember { mutableStateOf(false) }
+    var username by remember { mutableStateOf("") }
     var selectedTab by remember { mutableIntStateOf(0) }
     var refresh by remember { mutableIntStateOf(0) }
 
@@ -55,114 +306,164 @@ fun TeduhApp(database: DatabaseHelper) {
         database.getLatestDassResult()
     }
 
-    Scaffold(
-        containerColor = TeduhBackground,
-        bottomBar = {
-            NavigationBar(
-                containerColor = Color.White
-            ) {
-                val menus = listOf(
-                    "Mood",
-                    "Analisis",
-                    "Tes Stres",
-                    "Rekomendasi"
-                )
+    if (!isLoggedIn) {
 
-                menus.forEachIndexed { index, menu ->
-                    NavigationBarItem(
-                        selected = selectedTab == index,
-                        onClick = {
-                            selectedTab = index
-                        },
-                        icon = {},
-                        label = {
-                            Text(
-                                text = menu,
-                                fontSize = 11.sp
-                            )
-                        }
+        LoginScreen(
+            onLoginSuccess = { name ->
+                username = name
+                isLoggedIn = true
+                selectedTab = 0
+            }
+        )
+
+    } else {
+
+        Scaffold(
+            containerColor = TeduhBackground,
+            bottomBar = {
+
+                NavigationBar(
+                    containerColor = Color.White
+                ) {
+
+                    val menus = listOf(
+                        "Home",
+                        "Mood",
+                        "Analisis",
+                        "Tes Stres",
+                        "Rekomendasi"
                     )
+
+                    menus.forEachIndexed { index, menu ->
+
+                        NavigationBarItem(
+                            selected = selectedTab == index,
+                            onClick = {
+                                selectedTab = index
+                            },
+                            icon = {
+                                Text(
+                                    when (index) {
+                                        0 -> "⌂"
+                                        1 -> "♡"
+                                        2 -> "▤"
+                                        3 -> "◎"
+                                        else -> "✦"
+                                    },
+                                    fontSize = 18.sp
+                                )
+                            },
+                            label = {
+                                Text(
+                                    menu,
+                                    fontSize = 10.sp
+                                )
+                            }
+                        )
+                    }
                 }
             }
-        }
-    ) { padding ->
+        ) { padding ->
 
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-        ) {
-            when (selectedTab) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+            ) {
 
-                0 -> MoodScreen(
-                    moods = moods,
-                    onSave = { mood ->
-                        val success = database.insertMood(mood)
+                when (selectedTab) {
 
-                        if (success) {
-                            refresh++
+                    0 -> HomeScreen(
+                        username = username,
+                        moods = moods,
+                        dassResult = dassResult,
+                        onNavigate = { tab ->
+                            selectedTab = tab
                         }
+                    )
 
-                        success
-                    }
-                )
+                    1 -> MoodScreen(
+                        moods = moods,
+                        onSave = { mood ->
+                            val success = database.insertMood(mood)
 
-                1 -> AnalysisScreen(moods)
+                            if (success) {
+                                refresh++
+                            }
 
-                2 -> DassScreen(
-                    onSave = { depression, anxiety, stress ->
-                        val success = database.insertDassResult(
-                            LocalDate.now().toString(),
-                            depression,
-                            anxiety,
-                            stress
-                        )
-
-                        if (success) {
-                            refresh++
+                            success
                         }
+                    )
 
-                        success
-                    }
-                )
+                    2 -> AnalysisScreen(moods)
 
-                3 -> RecommendationScreen(
-                    moods = moods,
-                    dassResult = dassResult
-                )
+                    3 -> DassScreen(
+                        onSave = { depression, anxiety, stress ->
+
+                            val success =
+                                database.insertDassResult(
+                                    LocalDate.now().toString(),
+                                    depression,
+                                    anxiety,
+                                    stress
+                                )
+
+                            if (success) {
+                                refresh++
+                            }
+
+                            success
+                        }
+                    )
+
+                    4 -> RecommendationScreen(
+                        moods = moods,
+                        dassResult = dassResult
+                    )
+                }
             }
         }
     }
 }
 
+// =====================
+// COMPONENT
+// =====================
+
 @Composable
-fun SectionTitle(title: String, subtitle: String) {
+fun SectionTitle(
+    title: String,
+    subtitle: String = ""
+) {
+
     Column(
-        modifier = Modifier.padding(bottom = 16.dp)
+        verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
+
         Text(
-            text = title,
+            title,
             fontSize = 25.sp,
             fontWeight = FontWeight.Bold,
             color = TeduhGreen
         )
 
-        Spacer(modifier = Modifier.height(5.dp))
-
-        Text(
-            text = subtitle,
-            fontSize = 14.sp,
-            color = Color.Gray
-        )
+        if (subtitle.isNotEmpty()) {
+            Text(
+                subtitle,
+                color = Color.Gray,
+                fontSize = 14.sp
+            )
+        }
     }
 }
 
 @Composable
-fun TeduhCard(content: @Composable ColumnScope.() -> Unit) {
+fun TeduhCard(
+    content: @Composable ColumnScope.() -> Unit
+) {
+
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 7.dp),
+        modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
             containerColor = Color.White
@@ -171,18 +472,321 @@ fun TeduhCard(content: @Composable ColumnScope.() -> Unit) {
             defaultElevation = 2.dp
         )
     ) {
+
         Column(
             modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
             content = content
         )
     }
 }
+
+// =====================
+// LOGIN
+// =====================
+
+@Composable
+fun LoginScreen(
+    onLoginSuccess: (String) -> Unit
+) {
+
+    var username by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf("") }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        contentAlignment = Alignment.Center
+    ) {
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+
+            Text(
+                "TEDUH",
+                fontSize = 40.sp,
+                fontWeight = FontWeight.Bold,
+                color = TeduhGreen
+            )
+
+            Text(
+                "Temukan ketenangan,\nkenali dirimu.",
+                fontSize = 18.sp,
+                color = TeduhDark
+            )
+
+            TeduhCard {
+
+                Text(
+                    "Login",
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold
+                )
+
+                OutlinedTextField(
+                    value = username,
+                    onValueChange = {
+                        username = it
+                        error = ""
+                    },
+                    label = {
+                        Text("Username")
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = {
+                        password = it
+                        error = ""
+                    },
+                    label = {
+                        Text("Password")
+                    },
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+
+                if (error.isNotEmpty()) {
+                    Text(
+                        error,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+
+                Button(
+                    onClick = {
+
+                        if (username == "teduh" &&
+                            password == "123456"
+                        ) {
+                            onLoginSuccess(username)
+                        } else {
+                            error = "Username atau password salah."
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = TeduhGreen
+                    )
+                ) {
+                    Text("Masuk")
+                }
+            }
+
+            Text(
+                "TEDUH - Mood & Mental Wellness",
+                color = Color.Gray,
+                fontSize = 12.sp
+            )
+        }
+    }
+}
+
+// =====================
+// HOME
+// =====================
+
+@Composable
+fun HomeScreen(
+    username: String,
+    moods: List<Mood>,
+    dassResult: Map<String, Int>?,
+    onNavigate: (Int) -> Unit
+) {
+
+    val latestMood = moods.firstOrNull()
+
+    val stressScore = dassResult?.get("stress") ?: 0
+
+    val stressCategory =
+        if (dassResult != null) {
+            getDassCategory(stressScore, "stress")
+        } else {
+            "Belum ada hasil"
+        }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+
+        Text(
+            "TEDUH",
+            fontSize = 28.sp,
+            fontWeight = FontWeight.Bold,
+            color = TeduhGreen
+        )
+
+        Text(
+            "Halo, $username!",
+            fontSize = 23.sp,
+            fontWeight = FontWeight.Bold,
+            color = TeduhDark
+        )
+
+        TeduhCard {
+
+            Text(
+                "Selamat datang di TEDUH",
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                color = TeduhGreen
+            )
+
+            Text(
+                "Ruang untuk mengenali perasaan, " +
+                        "memahami kondisi diri, dan menjaga " +
+                        "kesehatan mental secara mandiri."
+            )
+        }
+
+        TeduhCard {
+
+            Text(
+                "Mood Terakhir",
+                fontWeight = FontWeight.Bold,
+                fontSize = 18.sp
+            )
+
+            if (latestMood != null) {
+
+                Text("Tanggal: ${latestMood.date}")
+                Text("Mood: ${latestMood.emotion}")
+                Text("Skor: ${latestMood.score}/5")
+                Text("Pemicu: ${latestMood.trigger}")
+
+            } else {
+
+                Text("Belum ada catatan mood.")
+            }
+
+            Button(
+                onClick = {
+                    onNavigate(1)
+                },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = TeduhGreen
+                )
+            ) {
+                Text("Catat Mood")
+            }
+        }
+
+        TeduhCard {
+
+            Text(
+                "Hasil Tes Stres Terakhir",
+                fontWeight = FontWeight.Bold,
+                fontSize = 18.sp
+            )
+
+            if (dassResult != null) {
+
+                Text("Skor: $stressScore")
+                Text("Kategori: $stressCategory")
+
+            } else {
+
+                Text("Belum ada hasil tes.")
+            }
+
+            Button(
+                onClick = {
+                    onNavigate(3)
+                },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = TeduhGreen
+                )
+            ) {
+                Text("Mulai Tes")
+            }
+        }
+
+        Text(
+            "Menu TEDUH",
+            fontWeight = FontWeight.Bold,
+            fontSize = 20.sp
+        )
+
+        HomeMenuCard(
+            "Analisis Mood",
+            "Lihat perkembangan mood mingguan.",
+            onClick = {
+                onNavigate(2)
+            }
+        )
+
+        HomeMenuCard(
+            "Tes DASS-21",
+            "Kenali tingkat depresi, kecemasan, dan stres.",
+            onClick = {
+                onNavigate(3)
+            }
+        )
+
+        HomeMenuCard(
+            "Rekomendasi Aktivitas",
+            "Temukan aktivitas yang sesuai dengan kondisimu.",
+            onClick = {
+                onNavigate(4)
+            }
+        )
+    }
+}
+
+@Composable
+fun HomeMenuCard(
+    title: String,
+    description: String,
+    onClick: () -> Unit
+) {
+
+    TeduhCard {
+
+        Text(
+            title,
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold,
+            color = TeduhGreen
+        )
+
+        Text(description)
+
+        Button(
+            onClick = onClick,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = TeduhGreen
+            )
+        ) {
+            Text("Buka")
+        }
+    }
+}
+
+// =====================
+// MOOD JOURNAL
+// =====================
 
 @Composable
 fun MoodScreen(
     moods: List<Mood>,
     onSave: (Mood) -> Boolean
 ) {
+
     val context = LocalContext.current
 
     var score by remember { mutableFloatStateOf(3f) }
@@ -214,27 +818,20 @@ fun MoodScreen(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(20.dp)
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
 
         SectionTitle(
             "Catatan Mood",
-            "Kenali dan catat perasaanmu hari ini."
+            "Ceritakan bagaimana perasaanmu hari ini."
         )
 
         TeduhCard {
 
             Text(
-                "Bagaimana perasaanmu hari ini?",
-                fontWeight = FontWeight.Bold
-            )
-
-            Spacer(modifier = Modifier.height(15.dp))
-
-            Text(
-                "${score.toInt()} / 5",
-                fontSize = 30.sp,
-                color = TeduhGreen,
+                "Skor Mood: ${score.toInt()}/5",
+                fontSize = 20.sp,
                 fontWeight = FontWeight.Bold
             )
 
@@ -244,45 +841,37 @@ fun MoodScreen(
                     score = it
                 },
                 valueRange = 1f..5f,
-                steps = 3,
-                colors = SliderDefaults.colors(
-                    thumbColor = TeduhGreen,
-                    activeTrackColor = TeduhGreen
-                )
+                steps = 3
             )
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text("Sangat buruk", fontSize = 11.sp)
-                Text("Sangat baik", fontSize = 11.sp)
-            }
+            Text("1 = Sangat buruk")
+            Text("2 = Buruk")
+            Text("3 = Biasa saja")
+            Text("4 = Baik")
+            Text("5 = Sangat baik")
         }
 
         TeduhCard {
 
             Text(
-                "Pilih emosi yang kamu rasakan",
+                "Emosi",
                 fontWeight = FontWeight.Bold
             )
 
-            Spacer(modifier = Modifier.height(10.dp))
-
             emotions.forEach { item ->
+
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Start
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    FilterChip(
+
+                    RadioButton(
                         selected = emotion == item,
                         onClick = {
                             emotion = item
-                        },
-                        label = {
-                            Text(item)
                         }
                     )
+
+                    Text(item)
                 }
             }
         }
@@ -290,25 +879,24 @@ fun MoodScreen(
         TeduhCard {
 
             Text(
-                "Apa yang memengaruhi perasaanmu?",
+                "Pemicu Perasaan",
                 fontWeight = FontWeight.Bold
             )
 
-            Spacer(modifier = Modifier.height(10.dp))
-
             triggers.forEach { item ->
+
                 Row(
-                    modifier = Modifier.fillMaxWidth()
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    FilterChip(
+
+                    RadioButton(
                         selected = trigger == item,
                         onClick = {
                             trigger = item
-                        },
-                        label = {
-                            Text(item)
                         }
                     )
+
+                    Text(item)
                 }
             }
         }
@@ -316,251 +904,296 @@ fun MoodScreen(
         TeduhCard {
 
             Text(
-                "Ceritakan perasaanmu",
+                "Jurnal",
                 fontWeight = FontWeight.Bold
             )
-
-            Spacer(modifier = Modifier.height(10.dp))
 
             OutlinedTextField(
                 value = journal,
                 onValueChange = {
                     journal = it
                 },
-                modifier = Modifier.fillMaxWidth(),
                 placeholder = {
-                    Text("Tuliskan apa yang sedang kamu rasakan...")
+                    Text("Tuliskan apa yang kamu rasakan...")
                 },
+                modifier = Modifier.fillMaxWidth(),
                 minLines = 4
             )
-        }
 
-        Button(
-            onClick = {
-                val mood = Mood(
-                    date = LocalDate.now().toString(),
-                    score = score.toInt(),
-                    emotion = emotion,
-                    trigger = trigger,
-                    journal = journal
+            Button(
+                onClick = {
+
+                    val mood = Mood(
+                        date = LocalDate.now().toString(),
+                        score = score.toInt(),
+                        emotion = emotion,
+                        trigger = trigger,
+                        journal = journal
+                    )
+
+                    if (onSave(mood)) {
+
+                        Toast.makeText(
+                            context,
+                            "Mood berhasil disimpan.",
+                            Toast.LENGTH_SHORT
+                        ).show()
+
+                        score = 3f
+                        emotion = "Senang"
+                        trigger = "Akademik"
+                        journal = ""
+
+                    } else {
+
+                        Toast.makeText(
+                            context,
+                            "Gagal menyimpan mood.",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = TeduhGreen
                 )
-
-                val success = onSave(mood)
-
-                Toast.makeText(
-                    context,
-                    if (success) "Mood berhasil disimpan"
-                    else "Gagal menyimpan mood",
-                    Toast.LENGTH_SHORT
-                ).show()
-
-                if (success) {
-                    journal = ""
-                    score = 3f
-                }
-            },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(50.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = TeduhGreen
-            )
-        ) {
-            Text("Simpan Catatan Mood")
+            ) {
+                Text("Simpan Mood")
+            }
         }
-
-        Spacer(modifier = Modifier.height(20.dp))
 
         Text(
             "Riwayat Mood",
             fontSize = 20.sp,
-            fontWeight = FontWeight.Bold,
-            color = TeduhGreen
+            fontWeight = FontWeight.Bold
         )
 
-        if (moods.isEmpty()) {
-            Text(
-                "Belum ada catatan mood.",
-                modifier = Modifier.padding(vertical = 15.dp),
-                color = Color.Gray
-            )
-        }
-
         moods.take(10).forEach { mood ->
+
             TeduhCard {
+
                 Text(
                     mood.date,
-                    color = Color.Gray,
-                    fontSize = 12.sp
-                )
-
-                Text(
-                    "${mood.emotion} • Skor ${mood.score}/5",
+                    color = TeduhGreen,
                     fontWeight = FontWeight.Bold
                 )
 
+                Text("Emosi: ${mood.emotion}")
+                Text("Skor: ${mood.score}/5")
                 Text("Pemicu: ${mood.trigger}")
 
                 if (mood.journal.isNotBlank()) {
-                    Text(
-                        mood.journal,
-                        color = Color.DarkGray
-                    )
+                    Text("Jurnal: ${mood.journal}")
                 }
             }
         }
     }
 }
 
+// =====================
+// MOOD ANALYSIS
+// =====================
+
 @Composable
-fun AnalysisScreen(moods: List<Mood>) {
+fun AnalysisScreen(
+    moods: List<Mood>
+) {
 
     val today = LocalDate.now()
 
+    val currentStart = today.minusDays(6)
+    val previousStart = today.minusDays(13)
+    val previousEnd = today.minusDays(7)
+
     val currentWeek = moods.filter {
         val date = LocalDate.parse(it.date)
-        !date.isBefore(today.minusDays(6)) &&
+
+        !date.isBefore(currentStart) &&
                 !date.isAfter(today)
     }
 
     val previousWeek = moods.filter {
         val date = LocalDate.parse(it.date)
-        date.isBefore(today.minusDays(6)) &&
-                !date.isBefore(today.minusDays(13))
+
+        !date.isBefore(previousStart) &&
+                !date.isAfter(previousEnd)
     }
 
-    val average = if (currentWeek.isNotEmpty()) {
-        currentWeek.map { it.score }.average()
-    } else {
-        0.0
-    }
+    val currentAverage =
+        if (currentWeek.isNotEmpty()) {
+            currentWeek.map { it.score }.average()
+        } else {
+            0.0
+        }
 
-    val previousAverage = if (previousWeek.isNotEmpty()) {
-        previousWeek.map { it.score }.average()
-    } else {
-        0.0
-    }
+    val previousAverage =
+        if (previousWeek.isNotEmpty()) {
+            previousWeek.map { it.score }.average()
+        } else {
+            0.0
+        }
 
-    val lowestMood = currentWeek.minByOrNull {
-        it.score
-    }
+    val lowestMood = currentWeek.minByOrNull { it.score }
 
-    val dominantTrigger = currentWeek
-        .groupingBy { it.trigger }
-        .eachCount()
-        .maxByOrNull { it.value }
-        ?.key
+    val dominantTrigger =
+        currentWeek.groupingBy { it.trigger }
+            .eachCount()
+            .maxByOrNull { it.value }
+            ?.key ?: "-"
 
-    val difference = average - previousAverage
+    val difference = currentAverage - previousAverage
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(20.dp)
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
 
         SectionTitle(
             "Analisis Mood",
-            "Pantau perkembangan suasana hatimu."
+            "Ringkasan perkembangan mood dalam 7 hari."
         )
 
         TeduhCard {
+
             Text(
-                "Rata-rata Mood (7 Hari)",
+                "Rata-rata Mood Minggu Ini",
                 fontWeight = FontWeight.Bold
             )
 
             Text(
-                if (currentWeek.isEmpty()) "Belum ada data"
-                else String.format("%.1f / 5", average),
+                if (currentWeek.isNotEmpty()) {
+                    String.format("%.2f / 5", currentAverage)
+                } else {
+                    "Belum ada data"
+                },
                 fontSize = 30.sp,
                 color = TeduhGreen,
                 fontWeight = FontWeight.Bold
             )
 
-            Text(
-                "Berdasarkan ${currentWeek.size} catatan mood."
-            )
+            Text("Jumlah catatan: ${currentWeek.size}")
         }
 
         TeduhCard {
+
             Text(
-                "Hari dengan Mood Terendah",
+                "Perbandingan Mingguan",
                 fontWeight = FontWeight.Bold
             )
 
             Text(
-                lowestMood?.let {
-                    "${it.date} • ${it.emotion} (${it.score}/5)"
-                } ?: "Belum ada data",
-                fontSize = 16.sp
-            )
-        }
-
-        TeduhCard {
-            Text(
-                "Pemicu yang Paling Sering Muncul",
-                fontWeight = FontWeight.Bold
+                "Minggu sebelumnya: " +
+                        if (previousWeek.isNotEmpty()) {
+                            String.format("%.2f", previousAverage)
+                        } else {
+                            "-"
+                        }
             )
 
             Text(
-                dominantTrigger ?: "Belum ada data",
-                fontSize = 18.sp,
-                color = TeduhGreen
-            )
-        }
-
-        TeduhCard {
-            Text(
-                "Perbandingan dengan 7 Hari Sebelumnya",
-                fontWeight = FontWeight.Bold
+                "Minggu ini: " +
+                        if (currentWeek.isNotEmpty()) {
+                            String.format("%.2f", currentAverage)
+                        } else {
+                            "-"
+                        }
             )
 
-            if (currentWeek.isEmpty() || previousWeek.isEmpty()) {
-                Text(
-                    "Data belum cukup untuk dibandingkan."
-                )
-            } else {
-                Text(
-                    "Minggu ini: %.1f".format(average)
-                )
-
-                Text(
-                    "Minggu sebelumnya: %.1f".format(previousAverage)
-                )
+            if (currentWeek.isNotEmpty() &&
+                previousWeek.isNotEmpty()
+            ) {
 
                 Text(
                     when {
-                        difference > 0 -> "Mood meningkat sebesar %.1f poin.".format(difference)
-                        difference < 0 -> "Mood menurun sebesar %.1f poin.".format(-difference)
-                        else -> "Rata-rata mood tidak berubah."
+                        difference > 0 ->
+                            "Mood meningkat sebesar " +
+                                    String.format("%.2f", difference)
+
+                        difference < 0 ->
+                            "Mood menurun sebesar " +
+                                    String.format("%.2f", -difference)
+
+                        else ->
+                            "Mood tidak mengalami perubahan."
                     },
                     color = TeduhGreen,
                     fontWeight = FontWeight.Bold
                 )
+            } else {
+                Text(
+                    "Perbandingan membutuhkan data " +
+                            "dari kedua minggu."
+                )
             }
         }
 
         TeduhCard {
+
             Text(
-                "Riwayat Mood 7 Hari",
+                "Mood Terendah",
                 fontWeight = FontWeight.Bold
             )
 
-            currentWeek.sortedBy { it.date }.forEach {
-                Text(
-                    "${it.date} — ${it.score}/5 (${it.emotion})",
-                    modifier = Modifier.padding(vertical = 5.dp)
-                )
-            }
+            if (lowestMood != null) {
 
-            if (currentWeek.isEmpty()) {
-                Text("Belum ada data mood.")
+                Text("Emosi: ${lowestMood.emotion}")
+                Text("Skor: ${lowestMood.score}/5")
+                Text("Tanggal: ${lowestMood.date}")
+
+            } else {
+
+                Text("Belum ada data minggu ini.")
             }
+        }
+
+        TeduhCard {
+
+            Text(
+                "Pemicu Dominan",
+                fontWeight = FontWeight.Bold
+            )
+
+            Text(dominantTrigger)
+        }
+
+        Text(
+            "Riwayat Mood",
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Bold
+        )
+
+        moods.forEach { mood ->
+
+            TeduhCard {
+
+                Text(
+                    mood.date,
+                    color = TeduhGreen,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Text("Mood: ${mood.emotion}")
+                Text("Skor: ${mood.score}/5")
+                Text("Pemicu: ${mood.trigger}")
+            }
+        }
+
+        if (moods.isEmpty()) {
+
+            Text(
+                "Belum ada data mood. " +
+                        "Mulai mencatat mood untuk melihat analisis."
+            )
         }
     }
 }
+
+// =====================
+// DASS-21 QUESTIONS
+// =====================
 
 private val dassQuestions = listOf(
     "Saya merasa sulit untuk menenangkan diri.",
@@ -602,6 +1235,7 @@ private fun calculateDass(
     answers: Map<Int, Int>,
     indexes: List<Int>
 ): Int {
+
     return indexes.sumOf {
         answers[it] ?: 0
     } * 2
@@ -640,6 +1274,10 @@ private fun getDassCategory(
     }
 }
 
+// =====================
+// DASS SCREEN
+// =====================
+
 @Composable
 fun DassScreen(
     onSave: (Int, Int, Int) -> Boolean
@@ -651,49 +1289,45 @@ fun DassScreen(
         mutableStateMapOf<Int, Int>()
     }
 
-    var showResult by remember {
-        mutableStateOf(false)
+    var resultDepression by remember {
+        mutableStateOf<Int?>(null)
     }
 
-    val depression = calculateDass(
-        answers,
-        depressionIndexes
-    )
+    var resultAnxiety by remember {
+        mutableStateOf<Int?>(null)
+    }
 
-    val anxiety = calculateDass(
-        answers,
-        anxietyIndexes
-    )
-
-    val stress = calculateDass(
-        answers,
-        stressIndexes
-    )
+    var resultStress by remember {
+        mutableStateOf<Int?>(null)
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(20.dp)
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
 
         SectionTitle(
             "Tes DASS-21",
-            "Evaluasi kondisi emosionalmu dalam 7 hari terakhir."
+            "Jawab 21 pertanyaan berdasarkan pengalaman " +
+                    "selama 7 hari terakhir."
         )
 
         TeduhCard {
+
             Text(
-                "Petunjuk Pengisian",
-                fontWeight = FontWeight.Bold
+                "Petunjuk",
+                fontWeight = FontWeight.Bold,
+                fontSize = 18.sp
             )
 
             Text(
-                "Pilih jawaban yang paling menggambarkan kondisi " +
-                        "yang kamu alami selama seminggu terakhir."
+                "Pilih jawaban yang paling sesuai " +
+                        "dengan kondisi yang kamu alami " +
+                        "selama 7 hari terakhir."
             )
-
-            Spacer(modifier = Modifier.height(10.dp))
 
             Text("0 = Tidak pernah")
             Text("1 = Kadang-kadang")
@@ -706,40 +1340,31 @@ fun DassScreen(
             TeduhCard {
 
                 Text(
-                    "Pertanyaan ${index + 1}",
-                    color = TeduhGreen,
+                    "${index + 1}. $question",
                     fontWeight = FontWeight.Bold
                 )
 
-                Spacer(modifier = Modifier.height(8.dp))
+                val options = listOf(
+                    "0 - Tidak pernah",
+                    "1 - Kadang-kadang",
+                    "2 - Sering",
+                    "3 - Hampir selalu"
+                )
 
-                Text(question)
+                options.forEachIndexed { value, label ->
 
-                Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
 
-                Column {
-                    listOf(
-                        "0 - Tidak pernah",
-                        "1 - Kadang-kadang",
-                        "2 - Sering",
-                        "3 - Hampir selalu"
-                    ).forEachIndexed { value, label ->
+                        RadioButton(
+                            selected = answers[index] == value,
+                            onClick = {
+                                answers[index] = value
+                            }
+                        )
 
-                        Row(
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            RadioButton(
-                                selected = answers[index] == value,
-                                onClick = {
-                                    answers[index] = value
-                                }
-                            )
-
-                            Text(
-                                label,
-                                modifier = Modifier.padding(top = 12.dp)
-                            )
-                        }
+                        Text(label)
                     }
                 }
             }
@@ -747,86 +1372,121 @@ fun DassScreen(
 
         Button(
             onClick = {
-                if (answers.size == 21) {
-                    val success = onSave(
-                        depression,
-                        anxiety,
-                        stress
+
+                if (answers.size != 21) {
+
+                    Toast.makeText(
+                        context,
+                        "Jawab seluruh 21 pertanyaan terlebih dahulu.",
+                        Toast.LENGTH_SHORT
+                    ).show()
+
+                } else {
+
+                    val depression = calculateDass(
+                        answers,
+                        depressionIndexes
                     )
 
-                    if (success) {
-                        showResult = true
+                    val anxiety = calculateDass(
+                        answers,
+                        anxietyIndexes
+                    )
+
+                    val stress = calculateDass(
+                        answers,
+                        stressIndexes
+                    )
+
+                    if (onSave(depression, anxiety, stress)) {
+
+                        resultDepression = depression
+                        resultAnxiety = anxiety
+                        resultStress = stress
+
                         Toast.makeText(
                             context,
-                            "Hasil tes berhasil disimpan",
+                            "Hasil tes berhasil disimpan.",
                             Toast.LENGTH_SHORT
                         ).show()
+
                     } else {
+
                         Toast.makeText(
                             context,
-                            "Gagal menyimpan hasil tes",
+                            "Gagal menyimpan hasil tes.",
                             Toast.LENGTH_SHORT
                         ).show()
                     }
-                } else {
-                    Toast.makeText(
-                        context,
-                        "Jawab seluruh 21 pertanyaan terlebih dahulu",
-                        Toast.LENGTH_SHORT
-                    ).show()
                 }
             },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(50.dp),
+            modifier = Modifier.fillMaxWidth(),
             colors = ButtonDefaults.buttonColors(
                 containerColor = TeduhGreen
             )
         ) {
-            Text("Lihat Hasil Tes")
+            Text("Lihat Hasil")
         }
 
-        if (showResult) {
-
-            Spacer(modifier = Modifier.height(20.dp))
+        if (resultDepression != null &&
+            resultAnxiety != null &&
+            resultStress != null
+        ) {
 
             Text(
-                "Hasil Pemeriksaan",
+                "Hasil Tes",
                 fontSize = 22.sp,
-                fontWeight = FontWeight.Bold,
-                color = TeduhGreen
+                fontWeight = FontWeight.Bold
             )
 
             DassResultCard(
-                "Depresi",
-                depression,
-                getDassCategory(depression, "depression")
+                title = "Depresi",
+                score = resultDepression!!,
+                category = getDassCategory(
+                    resultDepression!!,
+                    "depression"
+                )
             )
 
             DassResultCard(
-                "Kecemasan",
-                anxiety,
-                getDassCategory(anxiety, "anxiety")
+                title = "Kecemasan",
+                score = resultAnxiety!!,
+                category = getDassCategory(
+                    resultAnxiety!!,
+                    "anxiety"
+                )
             )
 
             DassResultCard(
-                "Stres",
-                stress,
-                getDassCategory(stress, "stress")
+                title = "Stres",
+                score = resultStress!!,
+                category = getDassCategory(
+                    resultStress!!,
+                    "stress"
+                )
             )
 
-            Text(
-                "Catatan: DASS-21 merupakan alat skrining, bukan " +
-                        "alat diagnosis. Hasilnya tidak menggantikan " +
-                        "penilaian tenaga profesional. Gunakan versi " +
-                        "terjemahan resmi dan tervalidasi untuk penggunaan penelitian.",
-                fontSize = 12.sp,
-                color = Color.Gray,
-                modifier = Modifier.padding(vertical = 12.dp)
-            )
+            TeduhCard {
+
+                Text(
+                    "Catatan",
+                    fontWeight = FontWeight.Bold
+                )
+
+                Text(
+                    "Hasil ini merupakan skrining awal, " +
+                            "bukan diagnosis psikologis atau medis. " +
+                            "Jika mengalami kesulitan, pertimbangkan " +
+                            "untuk berkonsultasi dengan tenaga profesional."
+                )
+            }
         }
     }
 }
+
+// =====================
+// DASS RESULT CARD
+// =====================
 
 @Composable
 fun DassResultCard(
@@ -834,20 +1494,31 @@ fun DassResultCard(
     score: Int,
     category: String
 ) {
+
     TeduhCard {
+
         Text(
             title,
-            fontWeight = FontWeight.Bold
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold,
+            color = TeduhGreen
         )
 
         Text(
-            "$score — $category",
-            fontSize = 20.sp,
-            color = TeduhGreen,
+            "Skor: $score",
+            fontSize = 20.sp
+        )
+
+        Text(
+            "Kategori: $category",
             fontWeight = FontWeight.Bold
         )
     }
 }
+
+// =====================
+// RECOMMENDATIONS
+// =====================
 
 @Composable
 fun RecommendationScreen(
@@ -855,72 +1526,78 @@ fun RecommendationScreen(
     dassResult: Map<String, Int>?
 ) {
 
+    val latestMood = moods.firstOrNull()
+
+    val stressScore = dassResult?.get("stress") ?: 0
+
+    val stressLevel =
+        if (dassResult != null) {
+            getDassCategory(stressScore, "stress")
+        } else {
+            "Moderate"
+        }
+
+    val recommendations =
+        if (latestMood != null) {
+
+            RecommendationHelper.getRecommendations(
+                latestMood.emotion,
+                latestMood.trigger,
+                stressLevel
+            )
+
+        } else {
+            emptyList()
+        }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(20.dp)
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
 
         SectionTitle(
-            "Rekomendasi Aktivitas",
-            "Temukan aktivitas yang sesuai dengan kondisimu."
+            "Rekomendasi",
+            "Aktivitas yang dapat membantu " +
+                    "menjaga kesejahteraanmu."
         )
-
-        val latestMood = moods.firstOrNull()
 
         if (latestMood == null) {
 
             TeduhCard {
+
                 Text(
-                    "Belum Ada Data Mood",
+                    "Belum tersedia rekomendasi",
                     fontWeight = FontWeight.Bold
                 )
 
                 Text(
-                    "Catat suasana hatimu terlebih dahulu " +
-                            "agar TEDUH dapat memberikan rekomendasi."
+                    "Catat mood terlebih dahulu agar " +
+                            "TEDUH dapat menyesuaikan rekomendasi " +
+                            "aktivitas dengan kondisimu."
                 )
             }
 
         } else {
 
-            val stressScore = dassResult?.get("stress") ?: 0
-
-            val stressLevel = if (dassResult == null) {
-                "Normal"
-            } else {
-                getDassCategory(stressScore, "stress")
-            }
-
             TeduhCard {
+
                 Text(
-                    "Kondisi Terakhir",
+                    "Berdasarkan Mood Terakhir",
                     fontWeight = FontWeight.Bold
                 )
 
                 Text("Emosi: ${latestMood.emotion}")
                 Text("Pemicu: ${latestMood.trigger}")
-                Text("Skor mood: ${latestMood.score}/5")
 
-                Text(
-                    "Kategori stres: $stressLevel"
-                )
+                if (dassResult != null) {
+                    Text("Kategori stres: $stressLevel")
+                } else {
+                    Text("Tes stres: belum tersedia")
+                }
             }
-
-            val recommendations =
-                RecommendationHelper.getRecommendations(
-                    emotion = latestMood.emotion,
-                    trigger = latestMood.trigger,
-                    stressLevel = stressLevel
-                )
-
-            Text(
-                "3 Rekomendasi untukmu",
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold,
-                color = TeduhGreen
-            )
 
             recommendations.forEachIndexed { index, activity ->
 
@@ -932,25 +1609,17 @@ fun RecommendationScreen(
                         fontWeight = FontWeight.Bold
                     )
 
-                    Spacer(
-                        modifier = Modifier.height(5.dp)
-                    )
-
                     Text(
                         activity.name,
-                        fontSize = 18.sp,
+                        fontSize = 20.sp,
                         fontWeight = FontWeight.Bold
                     )
 
-                    Text(
-                        activity.description,
-                        modifier = Modifier.padding(vertical = 8.dp)
-                    )
+                    Text(activity.description)
 
                     Text(
                         "Durasi: ${activity.duration}",
-                        color = TeduhGreen,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Medium
                     )
                 }
             }

@@ -11,6 +11,7 @@ class DatabaseHelper(context: Context) :
     SQLiteOpenHelper(context, "teduh.db", null, 1) {
 
     override fun onCreate(db: SQLiteDatabase) {
+
         db.execSQL(
             """
             CREATE TABLE moods (
@@ -48,6 +49,7 @@ class DatabaseHelper(context: Context) :
     }
 
     fun insertMood(mood: Mood): Boolean {
+
         val values = ContentValues().apply {
             put("date", mood.date)
             put("score", mood.score)
@@ -64,6 +66,7 @@ class DatabaseHelper(context: Context) :
     }
 
     fun getAllMoods(): List<Mood> {
+
         val result = mutableListOf<Mood>()
 
         val cursor = readableDatabase.rawQuery(
@@ -72,7 +75,9 @@ class DatabaseHelper(context: Context) :
         )
 
         cursor.use {
+
             while (it.moveToNext()) {
+
                 result.add(
                     Mood(
                         id = it.getInt(
@@ -107,6 +112,7 @@ class DatabaseHelper(context: Context) :
         anxiety: Int,
         stress: Int
     ): Boolean {
+
         val values = ContentValues().apply {
             put("date", date)
             put("depression", depression)
@@ -122,13 +128,16 @@ class DatabaseHelper(context: Context) :
     }
 
     fun getLatestDassResult(): Map<String, Int>? {
+
         val cursor = readableDatabase.rawQuery(
             "SELECT * FROM dass_results ORDER BY id DESC LIMIT 1",
             null
         )
 
         cursor.use {
+
             if (it.moveToFirst()) {
+
                 return mapOf(
                     "depression" to it.getInt(
                         it.getColumnIndexOrThrow("depression")

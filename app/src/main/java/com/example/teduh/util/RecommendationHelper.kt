@@ -12,6 +12,7 @@ data class ActivityRecommendation(
 object RecommendationHelper {
 
     private val activities = listOf(
+
         ActivityRecommendation(
             "Latihan Pernapasan",
             "Atur napas secara perlahan untuk membantu tubuh lebih rileks.",
@@ -19,6 +20,7 @@ object RecommendationHelper {
             "Pekerjaan, Akademik, Hubungan",
             "5 menit"
         ),
+
         ActivityRecommendation(
             "Mendengarkan Musik",
             "Dengarkan musik yang menenangkan dan nikmati suasananya.",
@@ -26,6 +28,7 @@ object RecommendationHelper {
             "Pekerjaan, Akademik, Lingkungan",
             "10 menit"
         ),
+
         ActivityRecommendation(
             "Menulis Jurnal",
             "Tuliskan perasaan dan hal-hal yang sedang kamu pikirkan.",
@@ -33,6 +36,7 @@ object RecommendationHelper {
             "Hubungan, Keluarga, Akademik",
             "10 menit"
         ),
+
         ActivityRecommendation(
             "Berjalan Santai",
             "Lakukan jalan santai untuk menyegarkan pikiran.",
@@ -40,6 +44,7 @@ object RecommendationHelper {
             "Pekerjaan, Akademik, Lingkungan",
             "15 menit"
         ),
+
         ActivityRecommendation(
             "Meditasi",
             "Luangkan waktu untuk menenangkan pikiran dan fokus pada diri sendiri.",
@@ -47,6 +52,7 @@ object RecommendationHelper {
             "Pekerjaan, Hubungan, Akademik",
             "10 menit"
         ),
+
         ActivityRecommendation(
             "Berbicara dengan Teman",
             "Ceritakan perasaanmu kepada orang yang kamu percaya.",
@@ -54,6 +60,7 @@ object RecommendationHelper {
             "Hubungan, Keluarga, Lingkungan",
             "15 menit"
         ),
+
         ActivityRecommendation(
             "Istirahat Sejenak",
             "Berikan waktu bagi tubuh dan pikiran untuk beristirahat.",
@@ -72,15 +79,29 @@ object RecommendationHelper {
         return activities.map { activity ->
 
             val emotionMatch =
-                if (activity.emotion.contains(emotion, ignoreCase = true)) 1 else 0
+                if (activity.emotion.contains(
+                        emotion,
+                        ignoreCase = true
+                    )
+                ) 1 else 0
 
             val triggerMatch =
-                if (activity.trigger.contains(trigger, ignoreCase = true)) 1 else 0
+                if (activity.trigger.contains(
+                        trigger,
+                        ignoreCase = true
+                    )
+                ) 1 else 0
 
             val durationMatch =
-                if (stressLevel == "Normal" || stressLevel == "Mild") {
+                if (
+                    stressLevel == "Normal" ||
+                    stressLevel == "Mild"
+                ) {
+
                     if (activity.duration == "15 menit") 1 else 0
+
                 } else {
+
                     if (
                         activity.duration == "5 menit" ||
                         activity.duration == "10 menit"
@@ -94,8 +115,10 @@ object RecommendationHelper {
 
             Pair(activity, score)
 
-        }.sortedByDescending { it.second }
-            .take(3)
-            .map { it.first }
+        }.sortedByDescending {
+            it.second
+        }.take(3).map {
+            it.first
+        }
     }
 }
