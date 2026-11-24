@@ -38,10 +38,9 @@ TEDUH 2.0 adalah aplikasi berbasis Android (Kotlin & Jetpack Compose) yang diran
 ## 👥 Tim Pengembang (Kelompok 3 PAPB)
 Proyek ini dibuat dan dikembangkan sebagai tugas Ujian Akhir Proyek (UAP) Praktikum Aplikasi Perangkat Bergerak.
 
-- **[Nama Anggota 1]** - [NIM]
-- **[Nama Anggota 2]** - [NIM]
-- **[Nama Anggota 3]** - [NIM]
-*(Ubah dan sesuaikan nama-nama ini dengan anggota kelompokmu ya!)*
+- **Eric Fausta Ariyanto** - [245150207111035]
+- **Putri Griselda Sonandi** - [245150207111036]
+- **Muhammad Rasya Adi Respati** - [245150207111026]
 
 ---
 > *"Kesehatan mentalmu sama pentingnya dengan kesehatan fisikmu. Jaga dirimu, kenali perasaanmu, dan temukan keteduhan."*
