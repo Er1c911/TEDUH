@@ -1,35 +1,62 @@
+@file:Suppress("DefaultLocale")
 
 package com.example.teduh
 
 import android.content.ContentValues
 import android.content.Context
+import android.database.sqlite.SQLiteConstraintException
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.teduh.model.Mood
+import java.security.SecureRandom
 import java.time.LocalDate
-import java.time.temporal.ChronoUnit
+import javax.crypto.SecretKeyFactory
+import javax.crypto.spec.PBEKeySpec
+import androidx.compose.foundation.Image
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+// =====================
+// WARNA & TEMA
+// =====================
 
 private val TeduhGreen = Color(0xFF477A68)
+private val TeduhGreenDark = Color(0xFF2F5A4B)
+private val TeduhLight = Color(0xFFE3EFEA)
 private val TeduhBackground = Color(0xFFF4F7F5)
 private val TeduhDark = Color(0xFF263A33)
+private val TeduhPeach = Color(0xFFF6C89F)
+private val TeduhGray = Color(0xFF7A8782)
+
+private val HeaderBrush = Brush.verticalGradient(
+    listOf(Color(0xFF5E9A84), TeduhGreenDark)
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -38,7 +65,12 @@ class MainActivity : ComponentActivity() {
         val database = DatabaseHelper(this)
 
         setContent {
-            MaterialTheme {
+            MaterialTheme(
+                colorScheme = lightColorScheme(
+                    primary = TeduhGreen,
+                    background = TeduhBackground
+                )
+            ) {
                 TeduhApp(database)
             }
         }
@@ -59,7 +91,7 @@ data class Mood(
 )
 
 class DatabaseHelper(context: Context) :
-    SQLiteOpenHelper(context, "teduh.db", null, 1) {
+    SQLiteOpenHelper(context, "teduh.db", null, 2) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -86,14 +118,81 @@ class DatabaseHelper(context: Context) :
             )
             """.trimIndent()
         )
+
+        createUsersTable(db)
     }
 
-    override fun onUpgrade(
-        db: SQLiteDatabase,
-        oldVersion: Int,
-        newVersion: Int
-    ) {
-        // Tidak menghapus data yang sudah tersimpan.
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        // Data lama tidak dihapus, hanya menambah tabel baru.
+        if (oldVersion < 2) createUsersTable(db)
+    }
+
+    // ---------- AKUN PENGGUNA ----------
+
+    private fun createUsersTable(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                salt TEXT NOT NULL
+            )
+            """.trimIndent()
+        )
+    }
+
+    private fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }
+
+    private fun String.hexToBytes() =
+        chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+
+    private fun hashPassword(password: String, salt: ByteArray): String {
+        val spec = PBEKeySpec(password.toCharArray(), salt, 10000, 256)
+        val bytes = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+            .generateSecret(spec).encoded
+        return bytes.toHex()
+    }
+
+    /** Mengembalikan false jika username sudah dipakai. */
+    fun registerUser(username: String, password: String): Boolean {
+        val salt = ByteArray(16).also { SecureRandom().nextBytes(it) }
+        val values = ContentValues().apply {
+            put("username", username.trim().lowercase())
+            put("password_hash", hashPassword(password, salt))
+            put("salt", salt.toHex())
+        }
+        return writableDatabase.insert("users", null, values) != -1L
+    }
+
+    fun loginUser(username: String, password: String): Boolean {
+        val cursor = readableDatabase.rawQuery(
+            "SELECT password_hash, salt FROM users WHERE username = ?",
+            arrayOf(username.trim().lowercase())
+        )
+        cursor.use {
+            if (it.moveToFirst()) {
+                val savedHash = it.getString(0)
+                val salt = it.getString(1).hexToBytes()
+                return hashPassword(password, salt) == savedHash
+            }
+        }
+        return false
+    }
+
+    /** Mengembalikan false jika username baru sudah dipakai. */
+    fun updateUsername(oldName: String, newName: String): Boolean {
+        val values = ContentValues().apply {
+            put("username", newName.trim().lowercase())
+        }
+        return try {
+            writableDatabase.update(
+                "users", values, "username = ?",
+                arrayOf(oldName.trim().lowercase())
+            ) > 0
+        } catch (e: SQLiteConstraintException) {
+            false
+        }
     }
 
     fun insertMood(mood: Mood): Boolean {
@@ -104,18 +203,15 @@ class DatabaseHelper(context: Context) :
             put("trigger_name", mood.trigger)
             put("journal", mood.journal)
         }
-
         return writableDatabase.insert("moods", null, values) != -1L
     }
 
     fun getAllMoods(): List<Mood> {
         val result = mutableListOf<Mood>()
-
         val cursor = readableDatabase.rawQuery(
             "SELECT * FROM moods ORDER BY date DESC, id DESC",
             null
         )
-
         cursor.use {
             while (it.moveToNext()) {
                 result.add(
@@ -130,28 +226,17 @@ class DatabaseHelper(context: Context) :
                 )
             }
         }
-
         return result
     }
 
-    fun insertDassResult(
-        date: String,
-        depression: Int,
-        anxiety: Int,
-        stress: Int
-    ): Boolean {
+    fun insertDassResult(date: String, depression: Int, anxiety: Int, stress: Int): Boolean {
         val values = ContentValues().apply {
             put("date", date)
             put("depression", depression)
             put("anxiety", anxiety)
             put("stress", stress)
         }
-
-        return writableDatabase.insert(
-            "dass_results",
-            null,
-            values
-        ) != -1L
+        return writableDatabase.insert("dass_results", null, values) != -1L
     }
 
     fun getLatestDassResult(): Map<String, Int>? {
@@ -159,23 +244,15 @@ class DatabaseHelper(context: Context) :
             "SELECT * FROM dass_results ORDER BY id DESC LIMIT 1",
             null
         )
-
         cursor.use {
             if (it.moveToFirst()) {
                 return mapOf(
-                    "depression" to it.getInt(
-                        it.getColumnIndexOrThrow("depression")
-                    ),
-                    "anxiety" to it.getInt(
-                        it.getColumnIndexOrThrow("anxiety")
-                    ),
-                    "stress" to it.getInt(
-                        it.getColumnIndexOrThrow("stress")
-                    )
+                    "depression" to it.getInt(it.getColumnIndexOrThrow("depression")),
+                    "anxiety" to it.getInt(it.getColumnIndexOrThrow("anxiety")),
+                    "stress" to it.getInt(it.getColumnIndexOrThrow("stress"))
                 )
             }
         }
-
         return null
     }
 }
@@ -255,28 +332,19 @@ object RecommendationHelper {
         return activities.map { activity ->
 
             val emotionMatch =
-                if (activity.emotions.any {
-                        it.equals(emotion, ignoreCase = true)
-                    }) 1 else 0
+                if (activity.emotions.any { it.equals(emotion, ignoreCase = true) }) 1 else 0
 
             val triggerMatch =
-                if (activity.triggers.any {
-                        it.equals(trigger, ignoreCase = true)
-                    }) 1 else 0
+                if (activity.triggers.any { it.equals(trigger, ignoreCase = true) }) 1 else 0
 
             val durationMatch =
                 if (stressLevel == "Normal" || stressLevel == "Mild") {
                     if (activity.duration == "15 menit") 1 else 0
                 } else {
-                    if (activity.duration == "5 menit" ||
-                        activity.duration == "10 menit"
-                    ) 1 else 0
+                    if (activity.duration == "5 menit" || activity.duration == "10 menit") 1 else 0
                 }
 
-            val score =
-                (emotionMatch * 3) +
-                        (triggerMatch * 2) +
-                        (durationMatch * 1)
+            val score = (emotionMatch * 3) + (triggerMatch * 2) + (durationMatch * 1)
 
             Pair(activity, score)
 
@@ -287,110 +355,119 @@ object RecommendationHelper {
 }
 
 // =====================
+// HELPER TAMPILAN
+// =====================
+
+private fun emotionEmoji(emotion: String): String = when (emotion) {
+    "Senang" -> "😊"
+    "Sedih" -> "😢"
+    "Cemas" -> "😰"
+    "Stres" -> "😫"
+    "Marah" -> "😠"
+    "Lelah" -> "😴"
+    "Bosan" -> "😑"
+    "Kesepian" -> "🥺"
+    else -> "🙂"
+}
+
+private fun scoreEmoji(score: Int): String = when (score) {
+    1 -> "😞"
+    2 -> "🙁"
+    3 -> "😐"
+    4 -> "🙂"
+    else -> "😄"
+}
+
+private fun scoreColor(score: Double): Color = when {
+    score <= 0.0 -> Color(0xFFD5DDD9)
+    score < 2.0 -> Color(0xFFE57373)
+    score < 3.0 -> Color(0xFFF2A65A)
+    score < 4.0 -> Color(0xFFE6CF63)
+    else -> Color(0xFF6DB38F)
+}
+
+private fun categoryColor(category: String): Color = when (category) {
+    "Normal" -> Color(0xFF4CAF82)
+    "Mild" -> Color(0xFF9CCB5A)
+    "Moderate" -> Color(0xFFF2A65A)
+    "Severe" -> Color(0xFFE8744F)
+    else -> Color(0xFFD64545)
+}
+
+private fun categoryIndo(category: String): String = when (category) {
+    "Normal" -> "Normal"
+    "Mild" -> "Ringan"
+    "Moderate" -> "Sedang"
+    "Severe" -> "Berat"
+    else -> "Sangat Berat"
+}
+
+// =====================
 // MAIN APP
 // =====================
 
+/** Aksi "kembali ke Beranda". Null berarti sedang di Beranda. */
+private val LocalOnBack = compositionLocalOf<(() -> Unit)?> { null }
+
+/*
+ * Nomor layar:
+ * 0 = Beranda (halaman utama)
+ * 1 = Catat Mood      2 = Analisis Mood   3 = Tes DASS-21
+ * 4 = Rekomendasi     5 = Ruang Bersama   6 = Profil
+ */
 @Composable
 fun TeduhApp(database: DatabaseHelper) {
 
     var isLoggedIn by remember { mutableStateOf(false) }
     var username by remember { mutableStateOf("") }
-    var selectedTab by remember { mutableIntStateOf(0) }
+    var currentScreen by remember { mutableIntStateOf(0) }
     var refresh by remember { mutableIntStateOf(0) }
 
-    val moods = remember(refresh) {
-        database.getAllMoods()
-    }
-
-    val dassResult = remember(refresh) {
-        database.getLatestDassResult()
-    }
+    val moods = remember(refresh) { database.getAllMoods() }
+    val dassResult = remember(refresh) { database.getLatestDassResult() }
 
     if (!isLoggedIn) {
 
         LoginScreen(
+            onLogin = { u, p -> database.loginUser(u, p) },
+            onRegister = { u, p -> database.registerUser(u, p) },
             onLoginSuccess = { name ->
                 username = name
                 isLoggedIn = true
-                selectedTab = 0
+                currentScreen = 0
             }
         )
 
     } else {
 
-        Scaffold(
-            containerColor = TeduhBackground,
-            bottomBar = {
+        val goHome: () -> Unit = { currentScreen = 0 }
 
-                NavigationBar(
-                    containerColor = Color.White
-                ) {
+        // Tombol back HP: dari fitur kembali ke Beranda dulu.
+        BackHandler(enabled = currentScreen != 0) { currentScreen = 0 }
 
-                    val menus = listOf(
-                        "Home",
-                        "Mood",
-                        "Analisis",
-                        "Tes Stres",
-                        "Rekomendasi"
-                    )
-
-                    menus.forEachIndexed { index, menu ->
-
-                        NavigationBarItem(
-                            selected = selectedTab == index,
-                            onClick = {
-                                selectedTab = index
-                            },
-                            icon = {
-                                Text(
-                                    when (index) {
-                                        0 -> "⌂"
-                                        1 -> "♡"
-                                        2 -> "▤"
-                                        3 -> "◎"
-                                        else -> "✦"
-                                    },
-                                    fontSize = 18.sp
-                                )
-                            },
-                            label = {
-                                Text(
-                                    menu,
-                                    fontSize = 10.sp
-                                )
-                            }
-                        )
-                    }
-                }
-            }
-        ) { padding ->
-
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(TeduhBackground)
+                .navigationBarsPadding()
+        ) {
+            CompositionLocalProvider(
+                LocalOnBack provides (if (currentScreen == 0) null else goHome)
             ) {
-
-                when (selectedTab) {
+                when (currentScreen) {
 
                     0 -> HomeScreen(
                         username = username,
                         moods = moods,
                         dassResult = dassResult,
-                        onNavigate = { tab ->
-                            selectedTab = tab
-                        }
+                        onNavigate = { screen -> currentScreen = screen }
                     )
 
                     1 -> MoodScreen(
                         moods = moods,
                         onSave = { mood ->
                             val success = database.insertMood(mood)
-
-                            if (success) {
-                                refresh++
-                            }
-
+                            if (success) refresh++
                             success
                         }
                     )
@@ -399,26 +476,34 @@ fun TeduhApp(database: DatabaseHelper) {
 
                     3 -> DassScreen(
                         onSave = { depression, anxiety, stress ->
-
-                            val success =
-                                database.insertDassResult(
-                                    LocalDate.now().toString(),
-                                    depression,
-                                    anxiety,
-                                    stress
-                                )
-
-                            if (success) {
-                                refresh++
-                            }
-
+                            val success = database.insertDassResult(
+                                LocalDate.now().toString(),
+                                depression,
+                                anxiety,
+                                stress
+                            )
+                            if (success) refresh++
                             success
                         }
                     )
 
-                    4 -> RecommendationScreen(
-                        moods = moods,
-                        dassResult = dassResult
+                    4 -> RecommendationScreen(moods = moods, dassResult = dassResult)
+
+                    5 -> CommunityScreen()
+
+                    6 -> ProfileScreen(
+                        username = username,
+                        moodCount = moods.size,
+                        onChangeUsername = { newName ->
+                            val ok = database.updateUsername(username, newName)
+                            if (ok) username = newName.trim().lowercase()
+                            ok
+                        },
+                        onLogout = {
+                            isLoggedIn = false
+                            username = ""
+                            currentScreen = 0
+                        }
                     )
                 }
             }
@@ -427,57 +512,191 @@ fun TeduhApp(database: DatabaseHelper) {
 }
 
 // =====================
-// COMPONENT
+// KOMPONEN UMUM
 // =====================
 
+/** Header hijau bergradien. Menampilkan tombol "Beranda" jika bukan di halaman utama. */
 @Composable
-fun SectionTitle(
+fun GradientHeader(
     title: String,
-    subtitle: String = ""
+    subtitle: String = "",
+    emoji: String = "",
+    action: (@Composable () -> Unit)? = null
 ) {
+    val onBack = LocalOnBack.current
 
-    Column(
-        verticalArrangement = Arrangement.spacedBy(6.dp)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(bottomStart = 32.dp, bottomEnd = 32.dp))
+            .background(HeaderBrush)
+            .statusBarsPadding()
+            .padding(start = 24.dp, end = 24.dp, top = 20.dp, bottom = 32.dp)
     ) {
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
 
-        Text(
-            title,
-            fontSize = 25.sp,
-            fontWeight = FontWeight.Bold,
-            color = TeduhGreen
-        )
+            if (onBack != null) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(Color.White.copy(alpha = 0.2f))
+                        .clickable { onBack() }
+                        .padding(horizontal = 14.dp, vertical = 7.dp)
+                ) {
+                    Text(
+                        "‹  Beranda",
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
 
-        if (subtitle.isNotEmpty()) {
-            Text(
-                subtitle,
-                color = Color.Gray,
-                fontSize = 14.sp
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                if (emoji == "LOGO") {
+                    Image(
+                        painter = painterResource(id = R.drawable.foto_teduh),
+                        contentDescription = "Foto TEDUH",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .size(52.dp)
+                            .clip(CircleShape)
+                    )
+                } else if (emoji.isNotEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .size(52.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.2f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(emoji, fontSize = 26.sp)
+                    }
+                }
+
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        title,
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                    if (subtitle.isNotEmpty()) {
+                        Text(
+                            subtitle,
+                            fontSize = 13.sp,
+                            color = Color.White.copy(alpha = 0.85f)
+                        )
+                    }
+                }
+
+                if (action != null) action()
+            }
         }
+    }
+}
+
+/** Layout standar halaman: header + isi yang bisa di-scroll. */
+@Composable
+fun ScreenScaffold(
+    title: String,
+    subtitle: String = "",
+    emoji: String = "",
+    action: (@Composable () -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+    ) {
+        GradientHeader(title, subtitle, emoji, action)
+
+        Column(
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            content = content
+        )
     }
 }
 
 @Composable
 fun TeduhCard(
+    modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit
 ) {
-
     Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = Color.White
-        ),
-        elevation = CardDefaults.cardElevation(
-            defaultElevation = 2.dp
-        )
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
     ) {
-
         Column(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier.padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
             content = content
         )
+    }
+}
+
+@Composable
+fun CardTitle(text: String, emoji: String = "") {
+    Text(
+        if (emoji.isNotEmpty()) "$emoji  $text" else text,
+        fontSize = 17.sp,
+        fontWeight = FontWeight.Bold,
+        color = TeduhDark
+    )
+}
+
+@Composable
+fun PrimaryButton(text: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Button(
+        onClick = onClick,
+        modifier = modifier
+            .fillMaxWidth()
+            .height(52.dp),
+        shape = RoundedCornerShape(16.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = TeduhGreen)
+    ) {
+        Text(text, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+    }
+}
+
+@Composable
+fun SelectChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(if (selected) TeduhGreen else TeduhLight)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 9.dp)
+    ) {
+        Text(
+            label,
+            color = if (selected) Color.White else TeduhDark,
+            fontSize = 14.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+        )
+    }
+}
+
+@Composable
+fun Badge(text: String, color: Color) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(color.copy(alpha = 0.18f))
+            .padding(horizontal = 12.dp, vertical = 5.dp)
+    ) {
+        Text(text, color = color, fontSize = 12.sp, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -487,16 +706,27 @@ fun TeduhCard(
 
 @Composable
 fun LoginScreen(
+    onLogin: (String, String) -> Boolean,
+    onRegister: (String, String) -> Boolean,
     onLoginSuccess: (String) -> Unit
 ) {
 
+    var isRegister by remember { mutableStateOf(false) }
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var confirm by remember { mutableStateOf("") }
+    var showPassword by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
+
+    val passwordTransformation =
+        if (showPassword) VisualTransformation.None else PasswordVisualTransformation()
 
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .background(HeaderBrush)
+            .statusBarsPadding()
+            .imePadding()
             .padding(24.dp),
         contentAlignment = Alignment.Center
     ) {
@@ -505,88 +735,141 @@ fun LoginScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+
+            Image(
+                painter = painterResource(id = R.drawable.foto_teduh),
+                contentDescription = "Foto TEDUH",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .size(96.dp)
+                    .clip(CircleShape)
+            )
 
             Text(
                 "TEDUH",
                 fontSize = 40.sp,
                 fontWeight = FontWeight.Bold,
-                color = TeduhGreen
+                color = Color.White,
+                letterSpacing = 4.sp
             )
 
             Text(
                 "Temukan ketenangan,\nkenali dirimu.",
-                fontSize = 18.sp,
-                color = TeduhDark
+                fontSize = 16.sp,
+                color = Color.White.copy(alpha = 0.9f),
+                textAlign = TextAlign.Center
             )
 
             TeduhCard {
 
                 Text(
-                    "Login",
+                    if (isRegister) "Buat akun 🌱" else "Selamat datang 👋",
                     fontSize = 22.sp,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    color = TeduhDark
                 )
 
                 OutlinedTextField(
                     value = username,
-                    onValueChange = {
-                        username = it
-                        error = ""
-                    },
-                    label = {
-                        Text("Username")
-                    },
+                    onValueChange = { username = it; error = "" },
+                    label = { Text("Username") },
                     modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp)
                 )
 
                 OutlinedTextField(
                     value = password,
-                    onValueChange = {
-                        password = it
-                        error = ""
-                    },
-                    label = {
-                        Text("Password")
-                    },
-                    visualTransformation = PasswordVisualTransformation(),
+                    onValueChange = { password = it; error = "" },
+                    label = { Text("Password") },
+                    visualTransformation = passwordTransformation,
                     modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                    trailingIcon = {
+                        TextButton(onClick = { showPassword = !showPassword }) {
+                            Text(
+                                if (showPassword) "Sembunyi" else "Lihat",
+                                color = TeduhGreen,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
                 )
 
-                if (error.isNotEmpty()) {
-                    Text(
-                        error,
-                        color = MaterialTheme.colorScheme.error
+                if (isRegister) {
+                    OutlinedTextField(
+                        value = confirm,
+                        onValueChange = { confirm = it; error = "" },
+                        label = { Text("Ulangi password") },
+                        visualTransformation = passwordTransformation,
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        shape = RoundedCornerShape(14.dp)
                     )
                 }
 
-                Button(
-                    onClick = {
+                if (error.isNotEmpty()) {
+                    Text(error, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+                }
 
-                        if (username == "teduh" &&
-                            password == "123456"
-                        ) {
-                            onLoginSuccess(username)
-                        } else {
-                            error = "Username atau password salah."
+                PrimaryButton(if (isRegister) "Daftar" else "Masuk") {
+                    val name = username.trim()
+
+                    when {
+                        name.isEmpty() || password.isEmpty() ->
+                            error = "Username dan password wajib diisi."
+
+                        isRegister && name.length < 3 ->
+                            error = "Username minimal 3 karakter."
+
+                        isRegister && password.length < 6 ->
+                            error = "Password minimal 6 karakter."
+
+                        isRegister && password != confirm ->
+                            error = "Konfirmasi password tidak sama."
+
+                        isRegister -> {
+                            if (onRegister(name, password)) {
+                                onLoginSuccess(name.lowercase())
+                            } else {
+                                error = "Username sudah dipakai."
+                            }
                         }
+
+                        else -> {
+                            if (onLogin(name, password)) {
+                                onLoginSuccess(name.lowercase())
+                            } else {
+                                error = "Username atau password salah."
+                            }
+                        }
+                    }
+                }
+
+                TextButton(
+                    onClick = {
+                        isRegister = !isRegister
+                        error = ""
+                        confirm = ""
                     },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = TeduhGreen
-                    )
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Masuk")
+                    Text(
+                        if (isRegister) "Sudah punya akun? Masuk"
+                        else "Belum punya akun? Daftar",
+                        color = TeduhGreen,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
 
             Text(
-                "TEDUH - Mood & Mental Wellness",
-                color = Color.Gray,
+                "TEDUH · Mood & Mental Wellness",
+                color = Color.White.copy(alpha = 0.7f),
                 fontSize = 12.sp
             )
         }
@@ -597,6 +880,13 @@ fun LoginScreen(
 // HOME
 // =====================
 
+private data class HomeFeature(
+    val emoji: String,
+    val title: String,
+    val description: String,
+    val screen: Int
+)
+
 @Composable
 fun HomeScreen(
     username: String,
@@ -606,173 +896,268 @@ fun HomeScreen(
 ) {
 
     val latestMood = moods.firstOrNull()
-
     val stressScore = dassResult?.get("stress") ?: 0
+    val stressCategory = if (dassResult != null) getDassCategory(stressScore, "stress") else null
 
-    val stressCategory =
-        if (dassResult != null) {
-            getDassCategory(stressScore, "stress")
-        } else {
-            "Belum ada hasil"
-        }
+    val features = listOf(
+        HomeFeature("📝", "Catat Mood", "Tulis perasaanmu hari ini.", 1),
+        HomeFeature("📊", "Analisis Mood", "Lihat perkembangan mingguan.", 2),
+        HomeFeature("🧠", "Tes DASS-21", "Kenali depresi, cemas, dan stres.", 3),
+        HomeFeature("✨", "Rekomendasi", "Aktivitas sesuai kondisimu.", 4),
+        HomeFeature("🤝", "Ruang Bersama", "Berbagi cerita dengan sesama.", 5),
+        HomeFeature("👤", "Profil", "Kelola akun dan username.", 6)
+    )
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ScreenScaffold(
+        title = "Halo, $username!",
+        subtitle = "Bagaimana perasaanmu hari ini?",
+        emoji = "LOGO",
+        action = { ProfileAvatar(username) { onNavigate(6) } }
     ) {
 
-        Text(
-            "TEDUH",
-            fontSize = 28.sp,
-            fontWeight = FontWeight.Bold,
-            color = TeduhGreen
-        )
+        // Ringkasan kondisi
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+
+            TeduhCard(modifier = Modifier.weight(1f)) {
+                Text("Mood Terakhir", fontSize = 12.sp, color = TeduhGray)
+                if (latestMood != null) {
+                    Text(emotionEmoji(latestMood.emotion), fontSize = 36.sp)
+                    Text(
+                        latestMood.emotion,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 17.sp,
+                        color = TeduhDark
+                    )
+                    Text("Skor ${latestMood.score}/5", fontSize = 12.sp, color = TeduhGray)
+                } else {
+                    Text("🫥", fontSize = 36.sp)
+                    Text("Belum ada catatan", fontSize = 13.sp, color = TeduhGray)
+                }
+            }
+
+            TeduhCard(modifier = Modifier.weight(1f)) {
+                Text("Tingkat Stres", fontSize = 12.sp, color = TeduhGray)
+                if (stressCategory != null) {
+                    Text(
+                        "$stressScore",
+                        fontSize = 36.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = categoryColor(stressCategory)
+                    )
+                    Badge(categoryIndo(stressCategory), categoryColor(stressCategory))
+                } else {
+                    Text("🧠", fontSize = 36.sp)
+                    Text("Belum ada hasil", fontSize = 13.sp, color = TeduhGray)
+                }
+            }
+        }
 
         Text(
-            "Halo, $username!",
-            fontSize = 23.sp,
+            "Fitur TEDUH",
             fontWeight = FontWeight.Bold,
+            fontSize = 18.sp,
             color = TeduhDark
         )
 
-        TeduhCard {
-
-            Text(
-                "Selamat datang di TEDUH",
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold,
-                color = TeduhGreen
-            )
-
-            Text(
-                "Ruang untuk mengenali perasaan, " +
-                        "memahami kondisi diri, dan menjaga " +
-                        "kesehatan mental secara mandiri."
-            )
-        }
-
-        TeduhCard {
-
-            Text(
-                "Mood Terakhir",
-                fontWeight = FontWeight.Bold,
-                fontSize = 18.sp
-            )
-
-            if (latestMood != null) {
-
-                Text("Tanggal: ${latestMood.date}")
-                Text("Mood: ${latestMood.emotion}")
-                Text("Skor: ${latestMood.score}/5")
-                Text("Pemicu: ${latestMood.trigger}")
-
-            } else {
-
-                Text("Belum ada catatan mood.")
-            }
-
-            Button(
-                onClick = {
-                    onNavigate(1)
-                },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = TeduhGreen
-                )
-            ) {
-                Text("Catat Mood")
+        // Semua fitur diakses dari sini
+        features.chunked(2).forEach { rowItems ->
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                rowItems.forEach { f ->
+                    HomeTile(
+                        emoji = f.emoji,
+                        title = f.title,
+                        description = f.description,
+                        modifier = Modifier.weight(1f)
+                    ) { onNavigate(f.screen) }
+                }
             }
         }
+    }
+}
 
-        TeduhCard {
-
-            Text(
-                "Hasil Tes Stres Terakhir",
-                fontWeight = FontWeight.Bold,
-                fontSize = 18.sp
-            )
-
-            if (dassResult != null) {
-
-                Text("Skor: $stressScore")
-                Text("Kategori: $stressCategory")
-
-            } else {
-
-                Text("Belum ada hasil tes.")
-            }
-
-            Button(
-                onClick = {
-                    onNavigate(3)
-                },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = TeduhGreen
-                )
-            ) {
-                Text("Mulai Tes")
-            }
-        }
-
+@Composable
+fun ProfileAvatar(username: String, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(48.dp)
+            .clip(CircleShape)
+            .background(Color.White.copy(alpha = 0.25f))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
         Text(
-            "Menu TEDUH",
-            fontWeight = FontWeight.Bold,
-            fontSize = 20.sp
-        )
-
-        HomeMenuCard(
-            "Analisis Mood",
-            "Lihat perkembangan mood mingguan.",
-            onClick = {
-                onNavigate(2)
-            }
-        )
-
-        HomeMenuCard(
-            "Tes DASS-21",
-            "Kenali tingkat depresi, kecemasan, dan stres.",
-            onClick = {
-                onNavigate(3)
-            }
-        )
-
-        HomeMenuCard(
-            "Rekomendasi Aktivitas",
-            "Temukan aktivitas yang sesuai dengan kondisimu.",
-            onClick = {
-                onNavigate(4)
-            }
+            username.take(1).uppercase().ifEmpty { "?" },
+            color = Color.White,
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Bold
         )
     }
 }
 
 @Composable
-fun HomeMenuCard(
+fun HomeTile(
+    emoji: String,
     title: String,
     description: String,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
-
-    TeduhCard {
-
-        Text(
-            title,
-            fontSize = 18.sp,
-            fontWeight = FontWeight.Bold,
-            color = TeduhGreen
-        )
-
-        Text(description)
-
-        Button(
-            onClick = onClick,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = TeduhGreen
-            )
+    Card(
+        modifier = modifier
+            .height(156.dp)
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text("Buka")
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(TeduhLight),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(emoji, fontSize = 24.sp)
+            }
+            Text(title, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = TeduhDark)
+            Text(description, fontSize = 12.sp, color = TeduhGray, maxLines = 2)
+        }
+    }
+}
+
+// =====================
+// PROFIL
+// =====================
+
+@Composable
+fun ProfileScreen(
+    username: String,
+    moodCount: Int,
+    onChangeUsername: (String) -> Boolean,
+    onLogout: () -> Unit
+) {
+
+    val context = LocalContext.current
+
+    var newName by remember { mutableStateOf(username) }
+    var error by remember { mutableStateOf("") }
+    var confirmLogout by remember { mutableStateOf(false) }
+
+    if (confirmLogout) {
+        AlertDialog(
+            onDismissRequest = { confirmLogout = false },
+            shape = RoundedCornerShape(24.dp),
+            title = { Text("Keluar dari akun?", fontWeight = FontWeight.Bold) },
+            text = { Text("Kamu bisa masuk lagi kapan saja dengan username dan password.") },
+            confirmButton = {
+                TextButton(onClick = { confirmLogout = false; onLogout() }) {
+                    Text("Keluar", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmLogout = false }) {
+                    Text("Batal", color = TeduhGray)
+                }
+            }
+        )
+    }
+
+    ScreenScaffold(
+        title = "Profil",
+        subtitle = "Kelola akunmu.",
+        emoji = "👤"
+    ) {
+
+        TeduhCard {
+            Box(
+                modifier = Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(88.dp)
+                        .clip(CircleShape)
+                        .background(TeduhLight),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        username.take(1).uppercase().ifEmpty { "?" },
+                        fontSize = 40.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = TeduhGreen
+                    )
+                }
+            }
+
+            Text(
+                username,
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold,
+                color = TeduhDark,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center
+            )
+
+            Text(
+                "📝 $moodCount catatan mood",
+                fontSize = 13.sp,
+                color = TeduhGray,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center
+            )
+        }
+
+        TeduhCard {
+            CardTitle("Ganti username", "✏️")
+
+            OutlinedTextField(
+                value = newName,
+                onValueChange = { newName = it; error = "" },
+                label = { Text("Username baru") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                shape = RoundedCornerShape(14.dp)
+            )
+
+            if (error.isNotEmpty()) {
+                Text(error, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+            }
+
+            PrimaryButton("Simpan username") {
+                val name = newName.trim().lowercase()
+
+                when {
+                    name.length < 3 -> error = "Username minimal 3 karakter."
+                    name == username -> error = "Username sama dengan yang sekarang."
+                    !name.matches(Regex("[a-z0-9_.]+")) ->
+                        error = "Gunakan huruf, angka, titik, atau underscore."
+                    onChangeUsername(name) -> {
+                        newName = name
+                        Toast.makeText(context, "Username berhasil diganti.", Toast.LENGTH_SHORT).show()
+                    }
+                    else -> error = "Username sudah dipakai."
+                }
+            }
+        }
+
+        OutlinedButton(
+            onClick = { confirmLogout = true },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(52.dp),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Text(
+                "Keluar",
+                color = MaterialTheme.colorScheme.error,
+                fontWeight = FontWeight.Bold
+            )
         }
     }
 }
@@ -781,6 +1166,7 @@ fun HomeMenuCard(
 // MOOD JOURNAL
 // =====================
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MoodScreen(
     moods: List<Mood>,
@@ -789,201 +1175,170 @@ fun MoodScreen(
 
     val context = LocalContext.current
 
-    var score by remember { mutableFloatStateOf(3f) }
+    var score by remember { mutableIntStateOf(3) }
     var emotion by remember { mutableStateOf("Senang") }
     var trigger by remember { mutableStateOf("Akademik") }
     var journal by remember { mutableStateOf("") }
 
-    val emotions = listOf(
-        "Senang",
-        "Sedih",
-        "Cemas",
-        "Stres",
-        "Marah",
-        "Lelah",
-        "Bosan",
-        "Kesepian"
-    )
+    val emotions = listOf("Senang", "Sedih", "Cemas", "Stres", "Marah", "Lelah", "Bosan", "Kesepian")
+    val triggers = listOf("Akademik", "Pekerjaan", "Hubungan", "Keluarga", "Lingkungan", "Lainnya")
+    val scoreLabels = listOf("Sangat buruk", "Buruk", "Biasa saja", "Baik", "Sangat baik")
 
-    val triggers = listOf(
-        "Akademik",
-        "Pekerjaan",
-        "Hubungan",
-        "Keluarga",
-        "Lingkungan",
-        "Lainnya"
-    )
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ScreenScaffold(
+        title = "Catatan Mood",
+        subtitle = "Ceritakan bagaimana perasaanmu hari ini.",
+        emoji = "📝"
     ) {
 
-        SectionTitle(
-            "Catatan Mood",
-            "Ceritakan bagaimana perasaanmu hari ini."
-        )
-
         TeduhCard {
+            CardTitle("Seberapa baik harimu?", "🌤️")
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                (1..5).forEach { value ->
+                    val selected = score == value
+                    Box(
+                        modifier = Modifier
+                            .size(54.dp)
+                            .clip(CircleShape)
+                            .background(if (selected) scoreColor(value.toDouble()).copy(alpha = 0.25f) else TeduhBackground)
+                            .border(
+                                BorderStroke(
+                                    if (selected) 2.5.dp else 0.dp,
+                                    if (selected) scoreColor(value.toDouble()) else Color.Transparent
+                                ),
+                                CircleShape
+                            )
+                            .clickable { score = value },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(scoreEmoji(value), fontSize = if (selected) 30.sp else 24.sp)
+                    }
+                }
+            }
 
             Text(
-                "Skor Mood: ${score.toInt()}/5",
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold
+                "$score/5 · ${scoreLabels[score - 1]}",
+                fontWeight = FontWeight.Bold,
+                color = TeduhGreen,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center
             )
-
-            Slider(
-                value = score,
-                onValueChange = {
-                    score = it
-                },
-                valueRange = 1f..5f,
-                steps = 3
-            )
-
-            Text("1 = Sangat buruk")
-            Text("2 = Buruk")
-            Text("3 = Biasa saja")
-            Text("4 = Baik")
-            Text("5 = Sangat baik")
         }
 
         TeduhCard {
-
-            Text(
-                "Emosi",
-                fontWeight = FontWeight.Bold
-            )
-
-            emotions.forEach { item ->
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-
-                    RadioButton(
-                        selected = emotion == item,
-                        onClick = {
-                            emotion = item
-                        }
-                    )
-
-                    Text(item)
+            CardTitle("Emosi yang dirasakan", "💭")
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                emotions.forEach { item ->
+                    SelectChip("${emotionEmoji(item)} $item", emotion == item) { emotion = item }
                 }
             }
         }
 
         TeduhCard {
-
-            Text(
-                "Pemicu Perasaan",
-                fontWeight = FontWeight.Bold
-            )
-
-            triggers.forEach { item ->
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-
-                    RadioButton(
-                        selected = trigger == item,
-                        onClick = {
-                            trigger = item
-                        }
-                    )
-
-                    Text(item)
+            CardTitle("Pemicu perasaan", "🎯")
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                triggers.forEach { item ->
+                    SelectChip(item, trigger == item) { trigger = item }
                 }
             }
         }
 
         TeduhCard {
-
-            Text(
-                "Jurnal",
-                fontWeight = FontWeight.Bold
-            )
+            CardTitle("Jurnal", "📖")
 
             OutlinedTextField(
                 value = journal,
-                onValueChange = {
-                    journal = it
-                },
-                placeholder = {
-                    Text("Tuliskan apa yang kamu rasakan...")
-                },
+                onValueChange = { journal = it },
+                placeholder = { Text("Tuliskan apa yang kamu rasakan...") },
                 modifier = Modifier.fillMaxWidth(),
-                minLines = 4
+                minLines = 4,
+                shape = RoundedCornerShape(16.dp)
             )
 
-            Button(
-                onClick = {
-
-                    val mood = Mood(
-                        date = LocalDate.now().toString(),
-                        score = score.toInt(),
-                        emotion = emotion,
-                        trigger = trigger,
-                        journal = journal
-                    )
-
-                    if (onSave(mood)) {
-
-                        Toast.makeText(
-                            context,
-                            "Mood berhasil disimpan.",
-                            Toast.LENGTH_SHORT
-                        ).show()
-
-                        score = 3f
-                        emotion = "Senang"
-                        trigger = "Akademik"
-                        journal = ""
-
-                    } else {
-
-                        Toast.makeText(
-                            context,
-                            "Gagal menyimpan mood.",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
-                },
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = TeduhGreen
+            PrimaryButton("Simpan Mood") {
+                val mood = Mood(
+                    date = LocalDate.now().toString(),
+                    score = score,
+                    emotion = emotion,
+                    trigger = trigger,
+                    journal = journal
                 )
-            ) {
-                Text("Simpan Mood")
+
+                if (onSave(mood)) {
+                    Toast.makeText(context, "Mood berhasil disimpan.", Toast.LENGTH_SHORT).show()
+                    score = 3
+                    emotion = "Senang"
+                    trigger = "Akademik"
+                    journal = ""
+                } else {
+                    Toast.makeText(context, "Gagal menyimpan mood.", Toast.LENGTH_SHORT).show()
+                }
             }
         }
 
         Text(
             "Riwayat Mood",
-            fontSize = 20.sp,
-            fontWeight = FontWeight.Bold
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold,
+            color = TeduhDark
         )
 
-        moods.take(10).forEach { mood ->
+        if (moods.isEmpty()) {
+            Text("Belum ada catatan.", color = TeduhGray)
+        }
 
-            TeduhCard {
+        moods.take(10).forEach { mood -> MoodHistoryItem(mood, showJournal = true) }
+    }
+}
 
-                Text(
-                    mood.date,
-                    color = TeduhGreen,
-                    fontWeight = FontWeight.Bold
-                )
+@Composable
+fun MoodHistoryItem(mood: Mood, showJournal: Boolean = false) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(14.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(scoreColor(mood.score.toDouble()).copy(alpha = 0.25f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(emotionEmoji(mood.emotion), fontSize = 24.sp)
+            }
 
-                Text("Emosi: ${mood.emotion}")
-                Text("Skor: ${mood.score}/5")
-                Text("Pemicu: ${mood.trigger}")
-
-                if (mood.journal.isNotBlank()) {
-                    Text("Jurnal: ${mood.journal}")
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(mood.emotion, fontWeight = FontWeight.Bold, color = TeduhDark)
+                    Text(mood.date, fontSize = 12.sp, color = TeduhGray)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Badge("Skor ${mood.score}/5", scoreColor(mood.score.toDouble()))
+                    Badge(mood.trigger, TeduhGreen)
+                }
+                if (showJournal && mood.journal.isNotBlank()) {
+                    Text(mood.journal, fontSize = 13.sp, color = TeduhGray)
                 }
             }
         }
@@ -991,208 +1346,206 @@ fun MoodScreen(
 }
 
 // =====================
-// MOOD ANALYSIS
+// ANALISIS MOOD
 // =====================
 
 @Composable
-fun AnalysisScreen(
-    moods: List<Mood>
-) {
+fun AnalysisScreen(moods: List<Mood>) {
 
     val today = LocalDate.now()
-
     val currentStart = today.minusDays(6)
     val previousStart = today.minusDays(13)
     val previousEnd = today.minusDays(7)
 
     val currentWeek = moods.filter {
         val date = LocalDate.parse(it.date)
-
-        !date.isBefore(currentStart) &&
-                !date.isAfter(today)
+        !date.isBefore(currentStart) && !date.isAfter(today)
     }
 
     val previousWeek = moods.filter {
         val date = LocalDate.parse(it.date)
-
-        !date.isBefore(previousStart) &&
-                !date.isAfter(previousEnd)
+        !date.isBefore(previousStart) && !date.isAfter(previousEnd)
     }
 
-    val currentAverage =
-        if (currentWeek.isNotEmpty()) {
-            currentWeek.map { it.score }.average()
-        } else {
-            0.0
-        }
-
-    val previousAverage =
-        if (previousWeek.isNotEmpty()) {
-            previousWeek.map { it.score }.average()
-        } else {
-            0.0
-        }
+    val currentAverage = if (currentWeek.isNotEmpty()) currentWeek.map { it.score }.average() else 0.0
+    val previousAverage = if (previousWeek.isNotEmpty()) previousWeek.map { it.score }.average() else 0.0
 
     val lowestMood = currentWeek.minByOrNull { it.score }
 
-    val dominantTrigger =
-        currentWeek.groupingBy { it.trigger }
-            .eachCount()
-            .maxByOrNull { it.value }
-            ?.key ?: "-"
+    val dominantTrigger = currentWeek.groupingBy { it.trigger }
+        .eachCount()
+        .maxByOrNull { it.value }
+        ?.key ?: "-"
 
     val difference = currentAverage - previousAverage
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+    // Data grafik 7 hari
+    val chartDays = (0..6).map { today.minusDays((6 - it).toLong()) }
+    val chartData = chartDays.map { day ->
+        val items = moods.filter { it.date == day.toString() }
+        val avg = if (items.isNotEmpty()) items.map { it.score }.average() else 0.0
+        Pair(day, avg)
+    }
+
+    val dayNames = listOf("Sen", "Sel", "Rab", "Kam", "Jum", "Sab", "Min")
+
+    ScreenScaffold(
+        title = "Analisis Mood",
+        subtitle = "Ringkasan perkembangan mood dalam 7 hari.",
+        emoji = "📊"
     ) {
 
-        SectionTitle(
-            "Analisis Mood",
-            "Ringkasan perkembangan mood dalam 7 hari."
-        )
-
         TeduhCard {
-
-            Text(
-                "Rata-rata Mood Minggu Ini",
-                fontWeight = FontWeight.Bold
-            )
-
-            Text(
-                if (currentWeek.isNotEmpty()) {
-                    String.format("%.2f / 5", currentAverage)
-                } else {
-                    "Belum ada data"
-                },
-                fontSize = 30.sp,
-                color = TeduhGreen,
-                fontWeight = FontWeight.Bold
-            )
-
-            Text("Jumlah catatan: ${currentWeek.size}")
-        }
-
-        TeduhCard {
-
-            Text(
-                "Perbandingan Mingguan",
-                fontWeight = FontWeight.Bold
-            )
-
-            Text(
-                "Minggu sebelumnya: " +
-                        if (previousWeek.isNotEmpty()) {
-                            String.format("%.2f", previousAverage)
-                        } else {
-                            "-"
-                        }
-            )
-
-            Text(
-                "Minggu ini: " +
-                        if (currentWeek.isNotEmpty()) {
-                            String.format("%.2f", currentAverage)
-                        } else {
-                            "-"
-                        }
-            )
-
-            if (currentWeek.isNotEmpty() &&
-                previousWeek.isNotEmpty()
+            CardTitle("Rata-rata minggu ini", "📈")
+            Row(
+                verticalAlignment = Alignment.Bottom,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-
                 Text(
-                    when {
-                        difference > 0 ->
-                            "Mood meningkat sebesar " +
-                                    String.format("%.2f", difference)
-
-                        difference < 0 ->
-                            "Mood menurun sebesar " +
-                                    String.format("%.2f", -difference)
-
-                        else ->
-                            "Mood tidak mengalami perubahan."
-                    },
-                    color = TeduhGreen,
-                    fontWeight = FontWeight.Bold
+                    if (currentWeek.isNotEmpty()) String.format("%.1f", currentAverage) else "–",
+                    fontSize = 44.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = TeduhGreen
                 )
-            } else {
                 Text(
-                    "Perbandingan membutuhkan data " +
-                            "dari kedua minggu."
+                    "/ 5",
+                    fontSize = 18.sp,
+                    color = TeduhGray,
+                    modifier = Modifier.padding(bottom = 8.dp)
                 )
+            }
+            Text("${currentWeek.size} catatan dalam 7 hari terakhir", fontSize = 13.sp, color = TeduhGray)
+        }
+
+        TeduhCard {
+            CardTitle("Grafik 7 hari", "🗓️")
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(150.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Bottom
+            ) {
+                chartData.forEach { (day, avg) ->
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Bottom
+                    ) {
+                        if (avg > 0) {
+                            Text(String.format("%.1f", avg), fontSize = 10.sp, color = TeduhGray)
+                            Spacer(Modifier.height(2.dp))
+                        }
+                        Box(
+                            modifier = Modifier
+                                .width(30.dp)
+                                .height(if (avg > 0) (avg.toFloat() / 5f * 100f).dp else 6.dp)
+                                .clip(RoundedCornerShape(topStart = 10.dp, topEnd = 10.dp, bottomStart = 4.dp, bottomEnd = 4.dp))
+                                .background(scoreColor(avg))
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            dayNames[day.dayOfWeek.value - 1],
+                            fontSize = 11.sp,
+                            color = TeduhGray
+                        )
+                    }
+                }
             }
         }
 
         TeduhCard {
+            CardTitle("Perbandingan mingguan", "⚖️")
 
-            Text(
-                "Mood Terendah",
-                fontWeight = FontWeight.Bold
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("Minggu lalu", fontSize = 12.sp, color = TeduhGray)
+                    Text(
+                        if (previousWeek.isNotEmpty()) String.format("%.2f", previousAverage) else "-",
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = TeduhDark
+                    )
+                }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("Minggu ini", fontSize = 12.sp, color = TeduhGray)
+                    Text(
+                        if (currentWeek.isNotEmpty()) String.format("%.2f", currentAverage) else "-",
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = TeduhGreen
+                    )
+                }
+            }
 
-            if (lowestMood != null) {
-
-                Text("Emosi: ${lowestMood.emotion}")
-                Text("Skor: ${lowestMood.score}/5")
-                Text("Tanggal: ${lowestMood.date}")
-
+            if (currentWeek.isNotEmpty() && previousWeek.isNotEmpty()) {
+                val (text, color) = when {
+                    difference > 0 -> Pair("📈 Mood meningkat ${String.format("%.2f", difference)}", Color(0xFF4CAF82))
+                    difference < 0 -> Pair("📉 Mood menurun ${String.format("%.2f", -difference)}", Color(0xFFE8744F))
+                    else -> Pair("➖ Mood tidak berubah", TeduhGray)
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(color.copy(alpha = 0.12f))
+                        .padding(12.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(text, color = color, fontWeight = FontWeight.Bold)
+                }
             } else {
-
-                Text("Belum ada data minggu ini.")
+                Text(
+                    "Perbandingan membutuhkan data dari kedua minggu.",
+                    fontSize = 13.sp,
+                    color = TeduhGray
+                )
             }
         }
 
-        TeduhCard {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
 
-            Text(
-                "Pemicu Dominan",
-                fontWeight = FontWeight.Bold
-            )
+            TeduhCard(modifier = Modifier.weight(1f)) {
+                Text("Mood terendah", fontSize = 12.sp, color = TeduhGray)
+                if (lowestMood != null) {
+                    Text(emotionEmoji(lowestMood.emotion), fontSize = 32.sp)
+                    Text(lowestMood.emotion, fontWeight = FontWeight.Bold, color = TeduhDark)
+                    Text("Skor ${lowestMood.score}/5 · ${lowestMood.date}", fontSize = 11.sp, color = TeduhGray)
+                } else {
+                    Text("Belum ada data", fontSize = 13.sp, color = TeduhGray)
+                }
+            }
 
-            Text(dominantTrigger)
+            TeduhCard(modifier = Modifier.weight(1f)) {
+                Text("Pemicu dominan", fontSize = 12.sp, color = TeduhGray)
+                Text("🎯", fontSize = 32.sp)
+                Text(dominantTrigger, fontWeight = FontWeight.Bold, color = TeduhDark)
+            }
         }
 
         Text(
             "Riwayat Mood",
-            fontSize = 20.sp,
-            fontWeight = FontWeight.Bold
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold,
+            color = TeduhDark
         )
 
-        moods.forEach { mood ->
-
-            TeduhCard {
-
-                Text(
-                    mood.date,
-                    color = TeduhGreen,
-                    fontWeight = FontWeight.Bold
-                )
-
-                Text("Mood: ${mood.emotion}")
-                Text("Skor: ${mood.score}/5")
-                Text("Pemicu: ${mood.trigger}")
-            }
-        }
+        moods.forEach { mood -> MoodHistoryItem(mood) }
 
         if (moods.isEmpty()) {
-
             Text(
-                "Belum ada data mood. " +
-                        "Mulai mencatat mood untuk melihat analisis."
+                "Belum ada data mood. Mulai mencatat mood untuk melihat analisis.",
+                color = TeduhGray
             )
         }
     }
 }
 
 // =====================
-// DASS-21 QUESTIONS
+// DASS-21
 // =====================
 
 private val dassQuestions = listOf(
@@ -1219,35 +1572,16 @@ private val dassQuestions = listOf(
     "Saya merasa hidup tidak berarti."
 )
 
-private val depressionIndexes = listOf(
-    2, 4, 9, 12, 15, 16, 20
-)
+private val depressionIndexes = listOf(2, 4, 9, 12, 15, 16, 20)
+private val anxietyIndexes = listOf(1, 3, 6, 8, 14, 18, 19)
+private val stressIndexes = listOf(0, 5, 7, 10, 11, 13, 17)
 
-private val anxietyIndexes = listOf(
-    1, 3, 6, 8, 14, 18, 19
-)
-
-private val stressIndexes = listOf(
-    0, 5, 7, 10, 11, 13, 17
-)
-
-private fun calculateDass(
-    answers: Map<Int, Int>,
-    indexes: List<Int>
-): Int {
-
-    return indexes.sumOf {
-        answers[it] ?: 0
-    } * 2
+private fun calculateDass(answers: Map<Int, Int>, indexes: List<Int>): Int {
+    return indexes.sumOf { answers[it] ?: 0 } * 2
 }
 
-private fun getDassCategory(
-    score: Int,
-    type: String
-): String {
-
+private fun getDassCategory(score: Int, type: String): String {
     return when (type) {
-
         "depression" -> when {
             score <= 9 -> "Normal"
             score <= 13 -> "Mild"
@@ -1255,7 +1589,6 @@ private fun getDassCategory(
             score <= 27 -> "Severe"
             else -> "Extremely Severe"
         }
-
         "anxiety" -> when {
             score <= 7 -> "Normal"
             score <= 9 -> "Mild"
@@ -1263,7 +1596,6 @@ private fun getDassCategory(
             score <= 19 -> "Severe"
             else -> "Extremely Severe"
         }
-
         else -> when {
             score <= 14 -> "Normal"
             score <= 18 -> "Mild"
@@ -1274,251 +1606,203 @@ private fun getDassCategory(
     }
 }
 
-// =====================
-// DASS SCREEN
-// =====================
-
 @Composable
-fun DassScreen(
-    onSave: (Int, Int, Int) -> Boolean
-) {
+fun DassScreen(onSave: (Int, Int, Int) -> Boolean) {
 
     val context = LocalContext.current
+    val answers = remember { mutableStateMapOf<Int, Int>() }
 
-    val answers = remember {
-        mutableStateMapOf<Int, Int>()
-    }
+    var resultDepression by remember { mutableStateOf<Int?>(null) }
+    var resultAnxiety by remember { mutableStateOf<Int?>(null) }
+    var resultStress by remember { mutableStateOf<Int?>(null) }
 
-    var resultDepression by remember {
-        mutableStateOf<Int?>(null)
-    }
-
-    var resultAnxiety by remember {
-        mutableStateOf<Int?>(null)
-    }
-
-    var resultStress by remember {
-        mutableStateOf<Int?>(null)
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ScreenScaffold(
+        title = "Tes DASS-21",
+        subtitle = "Jawab berdasarkan pengalamanmu selama 7 hari terakhir.",
+        emoji = "🧠"
     ) {
 
-        SectionTitle(
-            "Tes DASS-21",
-            "Jawab 21 pertanyaan berdasarkan pengalaman " +
-                    "selama 7 hari terakhir."
-        )
-
         TeduhCard {
-
+            CardTitle("Petunjuk", "ℹ️")
             Text(
-                "Petunjuk",
-                fontWeight = FontWeight.Bold,
-                fontSize = 18.sp
+                "Pilih angka yang paling sesuai dengan kondisimu.",
+                fontSize = 13.sp,
+                color = TeduhGray
             )
+            Text("0 = Tidak pernah", fontSize = 13.sp)
+            Text("1 = Kadang-kadang", fontSize = 13.sp)
+            Text("2 = Sering", fontSize = 13.sp)
+            Text("3 = Hampir selalu", fontSize = 13.sp)
 
-            Text(
-                "Pilih jawaban yang paling sesuai " +
-                        "dengan kondisi yang kamu alami " +
-                        "selama 7 hari terakhir."
+            Spacer(Modifier.height(4.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("Progres", fontSize = 12.sp, color = TeduhGray)
+                Text("${answers.size}/21", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TeduhGreen)
+            }
+            LinearProgressIndicator(
+                progress = { answers.size / 21f },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(8.dp)
+                    .clip(RoundedCornerShape(50)),
+                color = TeduhGreen,
+                trackColor = TeduhLight
             )
-
-            Text("0 = Tidak pernah")
-            Text("1 = Kadang-kadang")
-            Text("2 = Sering")
-            Text("3 = Hampir selalu")
         }
 
         dassQuestions.forEachIndexed { index, question ->
 
             TeduhCard {
-
                 Text(
                     "${index + 1}. $question",
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.SemiBold,
+                    color = TeduhDark,
+                    fontSize = 15.sp
                 )
 
-                val options = listOf(
-                    "0 - Tidak pernah",
-                    "1 - Kadang-kadang",
-                    "2 - Sering",
-                    "3 - Hampir selalu"
-                )
-
-                options.forEachIndexed { value, label ->
-
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-
-                        RadioButton(
-                            selected = answers[index] == value,
-                            onClick = {
-                                answers[index] = value
-                            }
-                        )
-
-                        Text(label)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    (0..3).forEach { value ->
+                        val selected = answers[index] == value
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(46.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(if (selected) TeduhGreen else TeduhLight)
+                                .clickable { answers[index] = value },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                "$value",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp,
+                                color = if (selected) Color.White else TeduhDark
+                            )
+                        }
                     }
                 }
             }
         }
 
-        Button(
-            onClick = {
+        PrimaryButton("Lihat Hasil") {
+            if (answers.size != 21) {
+                Toast.makeText(
+                    context,
+                    "Jawab seluruh 21 pertanyaan terlebih dahulu.",
+                    Toast.LENGTH_SHORT
+                ).show()
+            } else {
+                val depression = calculateDass(answers, depressionIndexes)
+                val anxiety = calculateDass(answers, anxietyIndexes)
+                val stress = calculateDass(answers, stressIndexes)
 
-                if (answers.size != 21) {
-
-                    Toast.makeText(
-                        context,
-                        "Jawab seluruh 21 pertanyaan terlebih dahulu.",
-                        Toast.LENGTH_SHORT
-                    ).show()
-
+                if (onSave(depression, anxiety, stress)) {
+                    resultDepression = depression
+                    resultAnxiety = anxiety
+                    resultStress = stress
+                    Toast.makeText(context, "Hasil tes berhasil disimpan.", Toast.LENGTH_SHORT).show()
                 } else {
-
-                    val depression = calculateDass(
-                        answers,
-                        depressionIndexes
-                    )
-
-                    val anxiety = calculateDass(
-                        answers,
-                        anxietyIndexes
-                    )
-
-                    val stress = calculateDass(
-                        answers,
-                        stressIndexes
-                    )
-
-                    if (onSave(depression, anxiety, stress)) {
-
-                        resultDepression = depression
-                        resultAnxiety = anxiety
-                        resultStress = stress
-
-                        Toast.makeText(
-                            context,
-                            "Hasil tes berhasil disimpan.",
-                            Toast.LENGTH_SHORT
-                        ).show()
-
-                    } else {
-
-                        Toast.makeText(
-                            context,
-                            "Gagal menyimpan hasil tes.",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
+                    Toast.makeText(context, "Gagal menyimpan hasil tes.", Toast.LENGTH_SHORT).show()
                 }
-            },
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = TeduhGreen
-            )
-        ) {
-            Text("Lihat Hasil")
+            }
         }
 
-        if (resultDepression != null &&
-            resultAnxiety != null &&
-            resultStress != null
-        ) {
+        val d = resultDepression
+        val a = resultAnxiety
+        val s = resultStress
+
+        if (d != null && a != null && s != null) {
 
             Text(
                 "Hasil Tes",
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Bold
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                color = TeduhDark
             )
 
-            DassResultCard(
-                title = "Depresi",
-                score = resultDepression!!,
-                category = getDassCategory(
-                    resultDepression!!,
-                    "depression"
-                )
-            )
-
-            DassResultCard(
-                title = "Kecemasan",
-                score = resultAnxiety!!,
-                category = getDassCategory(
-                    resultAnxiety!!,
-                    "anxiety"
-                )
-            )
-
-            DassResultCard(
-                title = "Stres",
-                score = resultStress!!,
-                category = getDassCategory(
-                    resultStress!!,
-                    "stress"
-                )
-            )
+            DassResultCard("😔", "Depresi", d, getDassCategory(d, "depression"))
+            DassResultCard("😰", "Kecemasan", a, getDassCategory(a, "anxiety"))
+            DassResultCard("😫", "Stres", s, getDassCategory(s, "stress"))
 
             TeduhCard {
-
+                CardTitle("Catatan", "💚")
                 Text(
-                    "Catatan",
-                    fontWeight = FontWeight.Bold
-                )
-
-                Text(
-                    "Hasil ini merupakan skrining awal, " +
-                            "bukan diagnosis psikologis atau medis. " +
-                            "Jika mengalami kesulitan, pertimbangkan " +
-                            "untuk berkonsultasi dengan tenaga profesional."
+                    "Hasil ini merupakan skrining awal, bukan diagnosis psikologis atau medis. " +
+                            "Jika mengalami kesulitan, pertimbangkan untuk berkonsultasi dengan tenaga profesional.",
+                    fontSize = 13.sp,
+                    color = TeduhGray
                 )
             }
         }
     }
 }
 
-// =====================
-// DASS RESULT CARD
-// =====================
-
 @Composable
 fun DassResultCard(
+    emoji: String,
     title: String,
     score: Int,
     category: String
 ) {
+    val color = categoryColor(category)
 
     TeduhCard {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(emoji, fontSize = 26.sp)
+                Text(title, fontSize = 17.sp, fontWeight = FontWeight.Bold, color = TeduhDark)
+            }
+            Badge(categoryIndo(category), color)
+        }
 
-        Text(
-            title,
-            fontSize = 18.sp,
-            fontWeight = FontWeight.Bold,
-            color = TeduhGreen
-        )
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text("$score", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = color)
+            Text(
+                " / 42",
+                fontSize = 14.sp,
+                color = TeduhGray,
+                modifier = Modifier.padding(bottom = 5.dp)
+            )
+        }
 
-        Text(
-            "Skor: $score",
-            fontSize = 20.sp
-        )
-
-        Text(
-            "Kategori: $category",
-            fontWeight = FontWeight.Bold
+        LinearProgressIndicator(
+            progress = { (score / 42f).coerceIn(0f, 1f) },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(8.dp)
+                .clip(RoundedCornerShape(50)),
+            color = color,
+            trackColor = color.copy(alpha = 0.15f)
         )
     }
 }
 
 // =====================
-// RECOMMENDATIONS
+// REKOMENDASI
 // =====================
+
+private fun activityEmoji(name: String): String = when (name) {
+    "Latihan Pernapasan" -> "🌬️"
+    "Mendengarkan Musik" -> "🎧"
+    "Menulis Jurnal" -> "✍️"
+    "Berjalan Santai" -> "🚶"
+    "Meditasi" -> "🧘"
+    "Berbicara dengan Teman" -> "💬"
+    else -> "🛋️"
+}
 
 @Composable
 fun RecommendationScreen(
@@ -1527,100 +1811,103 @@ fun RecommendationScreen(
 ) {
 
     val latestMood = moods.firstOrNull()
-
     val stressScore = dassResult?.get("stress") ?: 0
 
-    val stressLevel =
-        if (dassResult != null) {
-            getDassCategory(stressScore, "stress")
-        } else {
-            "Moderate"
-        }
+    val stressLevel = if (dassResult != null) getDassCategory(stressScore, "stress") else "Moderate"
 
-    val recommendations =
-        if (latestMood != null) {
-
-            RecommendationHelper.getRecommendations(
-                latestMood.emotion,
-                latestMood.trigger,
-                stressLevel
-            )
-
-        } else {
-            emptyList()
-        }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-
-        SectionTitle(
-            "Rekomendasi",
-            "Aktivitas yang dapat membantu " +
-                    "menjaga kesejahteraanmu."
+    val recommendations = if (latestMood != null) {
+        RecommendationHelper.getRecommendations(
+            latestMood.emotion,
+            latestMood.trigger,
+            stressLevel
         )
+    } else {
+        emptyList()
+    }
+
+    ScreenScaffold(
+        title = "Rekomendasi",
+        subtitle = "Aktivitas yang dapat membantu menjaga kesejahteraanmu.",
+        emoji = "✨"
+    ) {
 
         if (latestMood == null) {
 
             TeduhCard {
-
+                Text(
+                    "🌱",
+                    fontSize = 40.sp,
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = TextAlign.Center
+                )
                 Text(
                     "Belum tersedia rekomendasi",
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    color = TeduhDark,
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = TextAlign.Center
                 )
-
                 Text(
-                    "Catat mood terlebih dahulu agar " +
-                            "TEDUH dapat menyesuaikan rekomendasi " +
-                            "aktivitas dengan kondisimu."
+                    "Catat mood terlebih dahulu agar TEDUH dapat menyesuaikan rekomendasi aktivitas dengan kondisimu.",
+                    fontSize = 13.sp,
+                    color = TeduhGray,
+                    textAlign = TextAlign.Center
                 )
             }
 
         } else {
 
             TeduhCard {
-
-                Text(
-                    "Berdasarkan Mood Terakhir",
-                    fontWeight = FontWeight.Bold
-                )
-
-                Text("Emosi: ${latestMood.emotion}")
-                Text("Pemicu: ${latestMood.trigger}")
-
+                CardTitle("Berdasarkan mood terakhir", "🔎")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Badge("${emotionEmoji(latestMood.emotion)} ${latestMood.emotion}", TeduhGreen)
+                    Badge(latestMood.trigger, Color(0xFFE8A04F))
+                }
                 if (dassResult != null) {
-                    Text("Kategori stres: $stressLevel")
+                    Text(
+                        "Kategori stres: ${categoryIndo(stressLevel)}",
+                        fontSize = 13.sp,
+                        color = TeduhGray
+                    )
                 } else {
-                    Text("Tes stres: belum tersedia")
+                    Text("Tes stres: belum tersedia", fontSize = 13.sp, color = TeduhGray)
                 }
             }
 
             recommendations.forEachIndexed { index, activity ->
 
                 TeduhCard {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(56.dp)
+                                .clip(RoundedCornerShape(18.dp))
+                                .background(TeduhLight),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(activityEmoji(activity.name), fontSize = 28.sp)
+                        }
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                "Rekomendasi ${index + 1}",
+                                color = TeduhGreen,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                activity.name,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = TeduhDark
+                            )
+                        }
+                    }
 
-                    Text(
-                        "Rekomendasi ${index + 1}",
-                        color = TeduhGreen,
-                        fontWeight = FontWeight.Bold
-                    )
-
-                    Text(
-                        activity.name,
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-
-                    Text(activity.description)
-
-                    Text(
-                        "Durasi: ${activity.duration}",
-                        fontWeight = FontWeight.Medium
-                    )
+                    Text(activity.description, fontSize = 14.sp, color = TeduhGray)
+                    Badge("⏱ ${activity.duration}", TeduhGreen)
                 }
             }
         }
